@@ -4,6 +4,10 @@
 
 一个常驻 Windows 托盘的轻量截图工具，支持跨显示器区域截图、画笔、文字，以及复制到剪贴板或保存 PNG 文件。
 
+## 下载
+
+Windows 便携版在 [GitHub Releases](https://github.com/ciaooo55/simple-screenshot/releases/latest) 提供。主分支每次更新会自动运行测试；推送 `v*` 版本标签后，GitHub Actions 会远程打包并创建 Release。
+
 ## 使用方式
 
 1. 双击 SimpleScreenshot.exe，程序显示启动通知后进入系统托盘。
