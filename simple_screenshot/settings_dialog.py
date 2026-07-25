@@ -133,7 +133,9 @@ class SettingsDialog(QDialog):
         root.addLayout(form)
 
         note = QLabel(
-            "截图时：拖动鼠标选择区域，Enter 完成，Esc 取消；文字输入用 Ctrl+Enter 完成。",
+            "截图时：单击吸附窗口，拖动自由框选；选区边缘可微调；"
+            "双击或 Enter 完成默认动作；"
+            "Ctrl+C 复制，Ctrl+S 保存，Esc 取消。",
             self,
         )
         note.setStyleSheet("color: #666;")

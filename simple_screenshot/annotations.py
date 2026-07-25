@@ -27,6 +27,36 @@ class TextAnnotation:
 Annotation: TypeAlias = PenAnnotation | TextAnnotation
 
 
+def translated_annotations(
+    annotations: list[Annotation],
+    dx: float,
+    dy: float,
+) -> list[Annotation]:
+    transform = QTransform()
+    transform.translate(dx, dy)
+    translated: list[Annotation] = []
+    for command in annotations:
+        if isinstance(command, PenAnnotation):
+            translated.append(
+                PenAnnotation(
+                    transform.map(command.path),
+                    command.color,
+                    command.width,
+                )
+            )
+        else:
+            translated.append(
+                TextAnnotation(
+                    QPointF(command.position.x() + dx, command.position.y() + dy),
+                    command.text,
+                    command.color,
+                    command.font_size,
+                    command.width,
+                )
+            )
+    return translated
+
+
 def draw_annotations(
     painter: QPainter,
     annotations: list[Annotation],

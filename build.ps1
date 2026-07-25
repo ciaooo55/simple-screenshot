@@ -1,7 +1,17 @@
+param(
+    [switch]$Clean
+)
+
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
-python -m PyInstaller --noconfirm --clean SimpleScreenshot.spec
+$arguments = @("-m", "PyInstaller", "--noconfirm")
+if ($Clean) {
+    $arguments += "--clean"
+}
+$arguments += "SimpleScreenshot.spec"
+
+& python @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller 构建失败，退出代码：$LASTEXITCODE"
 }
