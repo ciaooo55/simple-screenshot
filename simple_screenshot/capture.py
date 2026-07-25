@@ -234,6 +234,7 @@ class CaptureOverlay(QWidget):
         )
         self.copy_button.setToolTip("复制到剪贴板（Ctrl+C）")
         self.save_button.setToolTip("保存到默认目录（Ctrl+S）")
+        self.select_button.setToolTip("拖动移动选区；方向键微调，Shift+方向键移动 10px")
 
         layout.addWidget(self.select_button)
         layout.addWidget(self.pen_button)
@@ -467,6 +468,23 @@ class CaptureOverlay(QWidget):
         ):
             self.finish()
             return
+        if self.state == "editing" and self._text_editor is None:
+            direction_by_key = {
+                Qt.Key.Key_Left: (-1.0, 0.0),
+                Qt.Key.Key_Right: (1.0, 0.0),
+                Qt.Key.Key_Up: (0.0, -1.0),
+                Qt.Key.Key_Down: (0.0, 1.0),
+            }
+            direction = direction_by_key.get(event.key())
+            if direction is not None:
+                distance = (
+                    10.0
+                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                    else 1.0
+                )
+                self._nudge_selection(direction[0] * distance, direction[1] * distance)
+                event.accept()
+                return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             if event.key() == Qt.Key.Key_Z:
                 self.undo()
@@ -729,6 +747,18 @@ class CaptureOverlay(QWidget):
         if "s" in transform:
             bottom = min(float(self.height()), max(point.y(), top + 2.0))
         self.selection = QRectF(QPointF(left, top), QPointF(right, bottom))
+        self.update()
+
+    def _nudge_selection(self, dx: float, dy: float) -> None:
+        if self.selection.isEmpty():
+            return
+        dx = max(-self.selection.left(), min(dx, self.width() - self.selection.right()))
+        dy = max(-self.selection.top(), min(dy, self.height() - self.selection.bottom()))
+        if dx == 0 and dy == 0:
+            return
+        self.selection = self.selection.translated(dx, dy)
+        self.annotations = translated_annotations(self.annotations, dx, dy)
+        self._position_toolbar()
         self.update()
 
     def _update_editing_cursor(self, point: QPointF) -> None:

@@ -309,3 +309,29 @@ def test_dragging_east_handle_resizes_selection(qapplication):
     )
 
     assert overlay.selection == QRectF(20, 20, 130, 80)
+
+
+def test_arrow_keys_nudge_selection_and_annotations(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(20, 20, 100, 80)
+    overlay.state = "editing"
+    path = QPainterPath(QPointF(40, 40))
+    path.lineTo(QPointF(50, 50))
+    overlay.annotations = [PenAnnotation(path, "#ff0000", 4.0)]
+
+    overlay.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.NoModifier)
+    )
+    overlay.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_Down,
+            Qt.KeyboardModifier.ShiftModifier,
+        )
+    )
+
+    assert overlay.selection == QRectF(21, 30, 100, 80)
+    moved = overlay.annotations[0]
+    assert isinstance(moved, PenAnnotation)
+    assert moved.path.elementAt(0).x == 41
+    assert moved.path.elementAt(0).y == 50
