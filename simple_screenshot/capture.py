@@ -183,6 +183,9 @@ def _color_swatch(color: str) -> QIcon:
 
 class CaptureOverlay(QWidget):
     completed = Signal(object, str, object)
+    # OCR 专用的干净渲染(剔除覆盖物、保留马赛克);completed 仍携带
+    # 完整标注图,托盘"保存最近一张"的语义不受影响。
+    ocr_ready = Signal(object)
     cancelled = Signal()
 
     # 进程内记忆:上次完成的选区(R 键恢复)与上次使用的标注样式。
@@ -1415,6 +1418,21 @@ class CaptureOverlay(QWidget):
         if resolved_action not in {"copy", "save", "pin", "save_as", "ocr"}:
             return
         self._commit_inline_text()
+        ocr_image: QImage | None = None
+        if resolved_action == "ocr":
+            # 识别用干净图:箭头/荧光/文字等覆盖物会干扰引擎。
+            # 马赛克必须保留——用户打码隐藏的内容绝不能泄漏进识别结果。
+            ocr_image = render_selection(
+                self.desktop.image,
+                self.selection,
+                self.desktop.render_scale,
+                [
+                    command
+                    for command in self.annotations
+                    if isinstance(command, MosaicAnnotation)
+                ],
+            )
+            ocr_image.setDevicePixelRatio(self.desktop.render_scale)
         image = render_selection(
             self.desktop.image,
             self.selection,
@@ -1433,6 +1451,8 @@ class CaptureOverlay(QWidget):
         self._resolved = True
         self.releaseKeyboard()
         self.hide()
+        if ocr_image is not None:
+            self.ocr_ready.emit(ocr_image)
         self.completed.emit(image, resolved_action, global_pos)
         self.close()
 

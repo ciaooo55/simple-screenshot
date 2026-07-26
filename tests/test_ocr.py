@@ -55,15 +55,17 @@ def test_recognize_rendered_text_end_to_end(qapplication):
     font = QFont("Microsoft YaHei")
     font.setPixelSize(28)
     painter.setFont(font)
+    # 用无歧义字形的样本:雅黑的小写 l 与大写 I 字形相同,
+    # "Hello" 可能被引擎识成 "HeIIo",那不是质量问题。
     painter.drawText(
-        image.rect(), Qt.AlignmentFlag.AlignCenter, "你好世界 Hello 123"
+        image.rect(), Qt.AlignmentFlag.AlignCenter, "你好世界 Demo 123"
     )
     painter.end()
 
     outcome = ocr.recognize_image(image)
 
     assert "你好世界" in outcome.text
-    assert "Hello" in outcome.text
+    assert "Demo" in outcome.text
     assert "123" in outcome.text
     assert outcome.line_count >= 1
 

@@ -1213,3 +1213,47 @@ def test_tiny_jitter_single_click_leaves_no_dot(qapplication):
 
     assert len(overlay.annotations) == 1
     overlay.cancel()
+
+
+def test_ocr_finish_drops_overlays_but_keeps_mosaic(qapplication):
+    from PySide6.QtGui import QPainter, QPainterPath as _QPainterPath
+
+    overlay = make_overlay("copy")
+    # 马赛克区域下方铺 1px 黑白竖条纹:块平均后必然变灰,
+    # 若过滤器把马赛克丢了,该处会保持纯黑或纯白。
+    painter = QPainter(overlay.desktop.image)
+    for x in range(120, 160):
+        painter.fillRect(
+            x, 30, 1, 30, QColor("black") if x % 2 == 0 else QColor("white")
+        )
+    painter.end()
+    overlay.selection = QRectF(10, 10, 200, 100)
+    overlay.state = "editing"
+    path = _QPainterPath(QPointF(20, 20))
+    path.lineTo(QPointF(180, 90))
+    overlay.annotations.append(PenAnnotation(path, "#ff0000", 8.0))
+    overlay.annotations.append(MosaicAnnotation(QRectF(120, 30, 40, 30)))
+    clean_images: list[object] = []
+    full_images: list[object] = []
+    overlay.ocr_ready.connect(lambda image: clean_images.append(image))
+    overlay.completed.connect(
+        lambda image, action, pos: full_images.append((image, action))
+    )
+
+    overlay.finish("ocr")
+    qapplication.processEvents()
+
+    assert len(clean_images) == 1 and len(full_images) == 1
+    clean = clean_images[0]
+    # 干净图:画笔被剔除(路径中点回到白底)……
+    center = clean.pixelColor(90, 45)
+    assert center.red() > 240 and center.green() > 240 and center.blue() > 240
+    # ……但马赛克保留:条纹被块平均成中间灰,打码内容不泄漏。
+    mosaic_pixel = clean.pixelColor(125, 33)
+    assert 30 < mosaic_pixel.red() < 225
+    # completed 携带完整标注图:托盘"保存最近一张"不丢箭头/画笔。
+    full, action = full_images[0]
+    assert action == "ocr"
+    pen_pixel = full.pixelColor(90, 45)
+    assert pen_pixel.red() > 200 and pen_pixel.green() < 90
+    assert len(overlay.annotations) == 2

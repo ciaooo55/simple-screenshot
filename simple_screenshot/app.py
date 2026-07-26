@@ -360,6 +360,7 @@ class AppController:
             overlay = CaptureOverlay(desktop, action)
             self.overlay = overlay
             overlay.completed.connect(self._capture_completed)
+            overlay.ocr_ready.connect(self._recognize_image)
             overlay.cancelled.connect(self._capture_cancelled)
             overlay.start()
             if fullscreen:
@@ -411,7 +412,8 @@ class AppController:
             self._save_image_as(image, clipboard_on_cancel=True)
             return
         if action == "ocr":
-            self._recognize_image(image)
+            # 识别已由 ocr_ready 信号携带干净图触发;这里只做记账:
+            # _last_image 保存的是带完整标注的图,托盘"保存最近一张"不丢标注。
             return
         self._save_image(image)
 
