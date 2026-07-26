@@ -20,6 +20,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QMenu,
     QMessageBox,
     QSystemTrayIcon,
@@ -28,7 +29,11 @@ from PySide6.QtWidgets import (
 from .capture import CaptureOverlay, capture_virtual_desktop
 from .config import AppSettings, SettingsStore, default_settings
 from .hotkeys import Hotkey, HotkeyManager, parse_hotkey
-from .output import save_png_atomic
+from .output import (
+    cleanup_stale_drag_copies,
+    save_png_atomic,
+    unique_screenshot_path,
+)
 from .pin_window import PinWindow
 from .settings_dialog import SettingsDialog
 from .single_instance import SingleInstance
@@ -89,6 +94,11 @@ class AppController:
         self.overlay: CaptureOverlay | None = None
         self.pin_windows: list[PinWindow] = []
         self._pins_hidden_for_capture: list[PinWindow] = []
+        self._last_save_as_dir: Path | None = None
+        try:
+            cleanup_stale_drag_copies()
+        except OSError:
+            pass
         self._capture_pending = False
         self._closed = False
         self._last_saved_path: Path | None = None
@@ -131,6 +141,7 @@ class AppController:
         pin_action = QAction("截图并钉住", menu)
         fullscreen_action = QAction("全屏截图", menu)
         self.pin_clipboard_action = QAction("贴图剪贴板图片", menu)
+        self.unlock_pins_action = QAction("恢复贴图可点击", menu)
         self.save_last_action = QAction("保存最近一张截图", menu)
         self.close_pins_action = QAction("关闭所有贴图", menu)
         folder_action = QAction("打开截图文件夹", menu)
@@ -146,6 +157,7 @@ class AppController:
             lambda: self.request_capture("copy", fullscreen=True)
         )
         self.pin_clipboard_action.triggered.connect(self.pin_clipboard_image)
+        self.unlock_pins_action.triggered.connect(self.restore_pins_clickable)
         self.save_last_action.triggered.connect(self._save_last_image)
         self.close_pins_action.triggered.connect(self.close_all_pins)
         folder_action.triggered.connect(self.open_save_directory)
@@ -159,6 +171,7 @@ class AppController:
         menu.addAction(fullscreen_action)
         menu.addSeparator()
         menu.addAction(self.pin_clipboard_action)
+        menu.addAction(self.unlock_pins_action)
         menu.addAction(self.save_last_action)
         menu.addAction(self.close_pins_action)
         menu.addAction(folder_action)
@@ -172,6 +185,13 @@ class AppController:
     def _sync_tray_menu(self) -> None:
         self.save_last_action.setEnabled(self._last_image is not None)
         self.close_pins_action.setEnabled(bool(self.pin_windows))
+        self.unlock_pins_action.setEnabled(
+            any(pin.click_through for pin in self.pin_windows)
+        )
+
+    def restore_pins_clickable(self) -> None:
+        for pin in self.pin_windows:
+            pin.set_click_through(False)
 
     def _save_last_image(self) -> None:
         if self._last_image is not None:
@@ -362,6 +382,9 @@ class AppController:
         if action == "pin":
             self._create_pin_window(image, global_pos)
             return
+        if action == "save_as":
+            self._save_image_as(image, clipboard_on_cancel=True)
+            return
         self._save_image(image)
 
     def _save_image(self, image: QImage) -> bool:
@@ -401,6 +424,9 @@ class AppController:
         pin.save_requested.connect(
             lambda saved, pin=pin: self._save_pin_image(pin, saved)
         )
+        pin.save_as_requested.connect(
+            lambda saved, pin=pin: self._save_pin_image_as(pin, saved)
+        )
         pin.close_all_requested.connect(self.close_all_pins)
         self.pin_windows.append(pin)
         pin.show()
@@ -434,6 +460,77 @@ class AppController:
     def _save_pin_image(self, pin: PinWindow, image: QImage) -> None:
         # 贴图窗口内保存也要有即时反馈,与 Ctrl+C 的"已复制"一致。
         pin.show_save_result(self._save_image(image))
+
+    def _save_pin_image_as(self, pin: PinWindow, image: QImage) -> None:
+        result = self._save_image_as(image, clipboard_on_cancel=False)
+        # 对话框打开期间贴图可能被 Esc/托盘关闭;只对仍存活的贴图反馈,
+        # 访问已销毁的 QWidget 会抛 RuntimeError 甚至崩溃。
+        if result is not None and pin in self.pin_windows:
+            pin.show_save_result(result)
+
+    def _save_image_as(
+        self, image: QImage, clipboard_on_cancel: bool
+    ) -> bool | None:
+        """弹文件对话框另存;返回 True/False 表示保存结果,None 表示取消。"""
+        start_dir = self._last_save_as_dir or Path(self.settings.save_directory)
+        try:
+            start_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            start_dir = Path.home()
+        suggested = unique_screenshot_path(start_dir)
+        # 对话框存续期间:1) 借用 _capture_pending 挡住全局热键重入,
+        # 否则新遮罩会盖住模态对话框把界面锁死;2) 临时藏起置顶贴图,
+        # 否则无父的原生对话框会被压在贴图后面点不到。
+        self._capture_pending = True
+        visible_pins = [pin for pin in self.pin_windows if pin.isVisible()]
+        for pin in visible_pins:
+            pin.hide()
+        try:
+            filename, _selected_filter = QFileDialog.getSaveFileName(
+                None,
+                "另存截图",
+                str(suggested),
+                "PNG 图片 (*.png)",
+            )
+        finally:
+            self._capture_pending = False
+            for pin in visible_pins:
+                if pin in self.pin_windows:
+                    pin.show()
+        if not filename:
+            if clipboard_on_cancel:
+                # 截图遮罩已经关闭,图不落盘就丢了;塞进剪贴板兜底。
+                self.app.clipboard().setImage(image)
+                self.notify("另存已取消", "截图已复制到剪贴板，可直接粘贴使用。")
+            return None
+        target = Path(filename)
+        if target.suffix.lower() != ".png":
+            # 追加而不是 with_suffix 替换:"shot.v2" 应变成 "shot.v2.png",
+            # 不能把点分段吃掉后静默指向另一个文件。
+            target = target.with_name(target.name + ".png")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not image.save(str(target), "PNG"):
+                raise OSError("图片编码失败")
+        except Exception as exc:
+            try:
+                self.app.clipboard().setImage(image)
+                fallback = "截图已复制到剪贴板，请尽快粘贴保存。"
+            except Exception:
+                fallback = ""
+            self.notify(
+                "另存失败",
+                f"无法写入 {target}：{exc}\n{fallback}".rstrip(),
+                warning=True,
+            )
+            return False
+        self._last_save_as_dir = target.parent
+        self.notify(
+            "截图已保存",
+            f"{target}\n点击本通知打开所在文件夹。",
+            saved_path=target,
+        )
+        return True
 
     def _pin_closed(self, pin: object) -> None:
         self.pin_windows = [

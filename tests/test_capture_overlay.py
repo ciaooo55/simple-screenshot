@@ -956,3 +956,87 @@ def test_undo_redo_blocked_while_reselecting(qapplication):
     assert overlay._history != []
     overlay.mouseReleaseEvent(MouseEventStub(QPointF(200, 30)))  # type: ignore[arg-type]
     overlay.cancel()
+
+
+def test_highlight_tool_draws_translucent_wide_stroke(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("highlight")
+    overlay.width_combo.setCurrentIndex(1)  # 4px
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(40, 40)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(120, 60)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(150, 70)))  # type: ignore[arg-type]
+
+    assert len(overlay.annotations) == 1
+    stroke = overlay.annotations[0]
+    assert isinstance(stroke, PenAnnotation)
+    # 半透明 ARGB 颜色(#AARRGGBB)+ 3 倍宽度。
+    assert len(stroke.color) == 9
+    assert stroke.color.lower().startswith("#66")
+    assert stroke.width == 12.0
+    overlay.cancel()
+
+
+def test_ctrl_shift_s_finishes_with_save_as_action(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(10, 10, 200, 100)
+    overlay.state = "editing"
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    press_key(
+        overlay,
+        Qt.Key.Key_S,
+        Qt.KeyboardModifier.ControlModifier
+        | Qt.KeyboardModifier.ShiftModifier,
+    )
+    qapplication.processEvents()
+
+    assert completed == ["save_as"]
+
+
+def test_escape_mid_stroke_only_cancels_gesture(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("pen")
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(40, 40)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(80, 60)))  # type: ignore[arg-type]
+    press_key(overlay, Qt.Key.Key_Escape)
+
+    assert overlay.active_path is None
+    assert overlay.state == "editing"
+    assert not overlay._resolved
+
+    press_key(overlay, Qt.Key.Key_Escape)
+    assert overlay._resolved
+
+
+def test_style_change_applies_live_to_open_text_editor(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("text")
+    overlay.mousePressEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    editor = overlay._text_editor
+    assert editor is not None
+
+    overlay.font_combo.setCurrentIndex(2)  # 32px
+    assert editor.font().pixelSize() == 32
+    assert editor is overlay._text_editor  # 没被提交关闭
+
+    overlay._discard_inline_text()
+    overlay.cancel()
+
+
+def test_toolbar_children_never_take_focus(qapplication):
+    overlay = make_overlay()
+    for name, button in overlay._tool_buttons.items():
+        assert button.focusPolicy() == Qt.FocusPolicy.NoFocus, name
+    assert overlay.width_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert overlay.font_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert overlay.color_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
+    overlay.cancel()

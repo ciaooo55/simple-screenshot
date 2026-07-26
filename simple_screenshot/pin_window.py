@@ -3,10 +3,12 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QMimeData, QUrl
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QContextMenuEvent,
+    QDrag,
     QGuiApplication,
     QImage,
     QKeyEvent,
@@ -14,9 +16,12 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPainter,
     QPen,
+    QPixmap,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QWidget
+
+from .output import export_drag_copy
 
 
 MIN_ZOOM = 0.2
@@ -40,6 +45,7 @@ class PinWindow(QWidget):
 
     closed = Signal(object)
     save_requested = Signal(QImage)
+    save_as_requested = Signal(QImage)
     close_all_requested = Signal()
 
     def __init__(
@@ -62,6 +68,9 @@ class PinWindow(QWidget):
         self._min_zoom = min(1.0, max(MIN_ZOOM, MIN_PIN_SIDE / base_short))
         self._zoom = 1.0
         self._drag_offset: QPoint | None = None
+        self._ctrl_drag_origin: QPoint | None = None
+        self._click_through = False
+        self._opacity_before_click_through = 1.0
         self._hud_text: str | None = None
         self._hud_timer = QTimer(self)
         self._hud_timer.setSingleShot(True)
@@ -143,6 +152,56 @@ class PinWindow(QWidget):
     def show_save_result(self, success: bool) -> None:
         self._show_hud("已保存" if success else "保存失败,详见通知")
 
+    @property
+    def click_through(self) -> bool:
+        return self._click_through
+
+    def set_click_through(self, enabled: bool) -> None:
+        """鼠标穿透:贴图变成纯参考图,点击落到下方窗口。
+
+        穿透后本窗口收不到任何鼠标事件,恢复入口在托盘菜单
+        「恢复贴图可点击」。
+        """
+        if enabled == self._click_through:
+            return
+        self._click_through = enabled
+        # 改 window flag 会让窗口隐藏,必须重新 show。
+        self.setWindowFlag(
+            Qt.WindowType.WindowTransparentForInput, enabled
+        )
+        self.show()
+        if enabled:
+            # 压暗作视觉提示,但记住用户自己调的不透明度,恢复时还原。
+            self._opacity_before_click_through = self.windowOpacity()
+            self.setWindowOpacity(min(self.windowOpacity(), 0.85))
+            self._show_hud("已穿透,托盘菜单可恢复")
+        else:
+            self.setWindowOpacity(self._opacity_before_click_through)
+            self._show_hud("已恢复可点击")
+
+    def _start_file_drag(self) -> None:
+        """Ctrl+拖动:把贴图导出成临时 PNG,拖进聊天窗口/上传框直接当文件用。"""
+        try:
+            target = export_drag_copy(self._image)
+        except Exception:
+            self._show_hud("导出失败")
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setImageData(self._image)
+        mime.setUrls([QUrl.fromLocalFile(str(target))])
+        drag.setMimeData(mime)
+        preview = QPixmap.fromImage(
+            self._image.scaled(
+                96,
+                96,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        drag.setPixmap(preview)
+        drag.exec(Qt.DropAction.CopyAction)
+
     def _show_hud(self, text: str) -> None:
         self._hud_text = text
         self._hud_timer.start()
@@ -212,6 +271,12 @@ class PinWindow(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                # 不立即启动拖出:等移动超过系统拖拽阈值再说,
+                # 否则 Ctrl+单击/Ctrl+双击都会误触发并落临时文件。
+                self._ctrl_drag_origin = event.position().toPoint()
+                event.accept()
+                return
             self._drag_offset = (
                 event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             )
@@ -221,6 +286,17 @@ class PinWindow(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._ctrl_drag_origin is not None and (
+            event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            moved = (
+                event.position().toPoint() - self._ctrl_drag_origin
+            ).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._ctrl_drag_origin = None
+                self._start_file_drag()
+            event.accept()
+            return
         if self._drag_offset is not None and (
             event.buttons() & Qt.MouseButton.LeftButton
         ):
@@ -232,6 +308,7 @@ class PinWindow(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            self._ctrl_drag_origin = None
             self._drag_offset = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
@@ -269,7 +346,10 @@ class PinWindow(QWidget):
                 self.copy_to_clipboard()
                 return
             if key == Qt.Key.Key_S:
-                self.save_requested.emit(self._image)
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    self.save_as_requested.emit(self._image)
+                else:
+                    self.save_requested.emit(self._image)
                 return
             if key == Qt.Key.Key_0:
                 self.reset_view()
@@ -307,7 +387,11 @@ class PinWindow(QWidget):
         menu.addSeparator()
         copy_action = menu.addAction("复制图片\tCtrl+C")
         save_action = menu.addAction("保存图片\tCtrl+S")
+        save_as_action = menu.addAction("另存为…\tCtrl+Shift+S")
+        drag_hint = menu.addAction("拖出文件：Ctrl+按住拖动")
+        drag_hint.setEnabled(False)
         reset_action = menu.addAction("恢复原始大小\t双击 / Ctrl+0")
+        through_action = menu.addAction("鼠标穿透（托盘菜单可恢复）")
         menu.addSeparator()
         close_action = menu.addAction("关闭贴图\tEsc")
         close_all_action = menu.addAction("关闭所有贴图")
@@ -316,8 +400,12 @@ class PinWindow(QWidget):
             self.copy_to_clipboard()
         elif chosen == save_action:
             self.save_requested.emit(self._image)
+        elif chosen == save_as_action:
+            self.save_as_requested.emit(self._image)
         elif chosen == reset_action:
             self.reset_view()
+        elif chosen == through_action:
+            self.set_click_through(True)
         elif chosen == close_action:
             self.close()
         elif chosen == close_all_action:

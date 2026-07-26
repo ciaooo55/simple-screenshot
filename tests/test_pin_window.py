@@ -178,3 +178,76 @@ def test_fit_to_allows_below_normal_min_and_stays_reachable(qapplication):
     pin.set_zoom(0.01)
     assert abs(pin.zoom - 0.116) < 1e-9
     pin.close()
+
+
+def test_ctrl_shift_s_requests_save_as(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    saved_as: list[QImage] = []
+    pin.save_as_requested.connect(lambda image: saved_as.append(image))
+
+    pin.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_S,
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.ShiftModifier,
+        )
+    )
+
+    assert len(saved_as) == 1
+    pin.close()
+
+
+def test_click_through_toggles_window_flag(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+
+    pin.set_click_through(True)
+    assert pin.click_through
+    assert bool(
+        pin.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    )
+
+    pin.set_click_through(False)
+    assert not pin.click_through
+    assert not bool(
+        pin.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    )
+    pin.close()
+
+
+def test_ctrl_click_without_move_does_not_start_drag(qapplication):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    press = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        QPointF(30, 30),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+    pin.mousePressEvent(press)
+    assert pin._ctrl_drag_origin is not None
+
+    release = QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        QPointF(30, 30),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+    pin.mouseReleaseEvent(release)
+    assert pin._ctrl_drag_origin is None
+    pin.close()
+
+
+def test_click_through_restores_user_opacity(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    pin.setWindowOpacity(0.4)
+
+    pin.set_click_through(True)
+    pin.set_click_through(False)
+
+    assert abs(pin.windowOpacity() - 0.4) < 0.05
+    pin.close()

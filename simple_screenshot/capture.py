@@ -127,7 +127,10 @@ class InlineTextEdit(QTextEdit):
 
     def focusOutEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().focusOutEvent(event)
-        QTimer.singleShot(0, self._commit_from_focus_out)
+        # 工具栏下拉框弹出抢焦点不算"离开输入":跳过提交,
+        # 用户才能边输入边换颜色/字号。
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            QTimer.singleShot(0, self._commit_from_focus_out)
 
     def _commit_from_focus_out(self) -> None:
         # 提交/丢弃后 hide() 会再触发一次失焦;此时 C++ 对象可能已进入
@@ -146,6 +149,8 @@ TOOL_SHORTCUTS: dict[int, str] = {
     Qt.Key.Key_1: "select",
     Qt.Key.Key_P: "pen",
     Qt.Key.Key_2: "pen",
+    Qt.Key.Key_G: "highlight",
+    Qt.Key.Key_9: "highlight",
     Qt.Key.Key_A: "arrow",
     Qt.Key.Key_3: "arrow",
     Qt.Key.Key_R: "rect",
@@ -159,6 +164,10 @@ TOOL_SHORTCUTS: dict[int, str] = {
     Qt.Key.Key_T: "text",
     Qt.Key.Key_8: "text",
 }
+
+# 荧光笔:半透明 + 加粗的画笔,高亮文字而不遮盖内容。
+HIGHLIGHT_ALPHA = 102
+HIGHLIGHT_WIDTH_FACTOR = 3.0
 
 
 def _color_swatch(color: str) -> QIcon:
@@ -282,6 +291,9 @@ class CaptureOverlay(QWidget):
             "加 Shift 每次 10px",
         )
         self.pen_button = add_tool("pen", "画笔", "自由画笔（P）")
+        self.highlight_button = add_tool(
+            "highlight", "荧光", "荧光笔:半透明高亮,不遮挡文字（G）"
+        )
         self.arrow_button = add_tool("arrow", "箭头", "拖动绘制箭头（A）")
         self.rect_button = add_tool("rect", "矩形", "拖动绘制矩形框（R）")
         self.ellipse_button = add_tool("ellipse", "椭圆", "拖动绘制椭圆框（O）")
@@ -354,7 +366,9 @@ class CaptureOverlay(QWidget):
         )
         self.pin_button.setToolTip("钉住为置顶贴图（Ctrl+D）")
         self.copy_button.setToolTip("复制到剪贴板（Ctrl+C）")
-        self.save_button.setToolTip("保存到默认目录（Ctrl+S）")
+        self.save_button.setToolTip(
+            "保存到默认目录（Ctrl+S）；另存为…（Ctrl+Shift+S）"
+        )
 
         layout.addWidget(self.undo_button)
         layout.addWidget(self.redo_button)
@@ -375,6 +389,16 @@ class CaptureOverlay(QWidget):
         for button in self._tool_buttons.values():
             button.toggled.connect(self._update_cursor)
             button.toggled.connect(self._sync_tool_options)
+        # 文字输入中改颜色/字号要实时应用到输入框,而不是把文字提交掉;
+        # 工具栏控件一律不抢焦点,点它们时输入框保持编辑状态。
+        self.color_combo.currentIndexChanged.connect(
+            lambda _index: self._apply_style_to_text_editor()
+        )
+        self.font_combo.currentIndexChanged.connect(
+            lambda _index: self._apply_style_to_text_editor()
+        )
+        for child in toolbar.findChildren(QWidget):
+            child.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._apply_remembered_style()
         self._sync_tool_options()
         self._sync_annotation_actions()
@@ -532,15 +556,16 @@ class CaptureOverlay(QWidget):
         ("单击窗口 / 拖动", "吸附选择 / 自由框选(Shift 正方形)"),
         ("Ctrl+A / R", "全屏 / 恢复上次选区"),
         ("方向键 / Ctrl+方向键", "移动选区 / 调整大小(加 Shift ×10)"),
-        ("V P A R O", "选择 · 画笔 · 箭头 · 矩形 · 椭圆"),
-        ("N M T", "序号 · 马赛克 · 文字(数字 1-8 同效)"),
+        ("V P G A R O", "选择 · 画笔 · 荧光 · 箭头 · 矩形 · 椭圆"),
+        ("N M T", "序号 · 马赛克 · 文字(数字键同效)"),
         ("滚轮", "调画笔粗细 / 文字字号"),
         ("Shift 拖动", "正方形 / 正圆 / 45° 箭头"),
         ("Ctrl+Z / Ctrl+Y", "撤销 / 重做"),
         ("双击 / Enter", "完成默认动作"),
         ("Ctrl+C / S / D", "复制 / 保存 / 钉住"),
+        ("Ctrl+Shift+S", "另存为(自选路径)"),
         ("C", "框选时复制光标处颜色值"),
-        ("右键 / Esc", "逐级返回 / 取消"),
+        ("右键 / Esc", "逐级返回;拖拽中只取消当前一笔"),
     )
 
     def _draw_help_panel(self, painter: QPainter) -> None:
@@ -943,12 +968,9 @@ class CaptureOverlay(QWidget):
                 self.active_path.lineTo(self._clamp_point(event.position()))
             if self.active_path.elementCount() > 1:
                 self._push_history()
+                color, width = self._pen_style()
                 self.annotations.append(
-                    PenAnnotation(
-                        QPainterPath(self.active_path),
-                        self._current_color(),
-                        float(self.width_combo.currentData()),
-                    )
+                    PenAnnotation(QPainterPath(self.active_path), color, width)
                 )
             self.active_path = None
             self._pen_last_point = None
@@ -1011,28 +1033,7 @@ class CaptureOverlay(QWidget):
                 self._discard_reselection_backup()
             self.update()
             return
-        if (
-            self._shape_origin is not None
-            or self._active_shape is not None
-            or self.active_path is not None
-        ):
-            # 正在拖一笔标注:右键只丢弃这一笔,已有标注不动。
-            self._shape_origin = None
-            self._active_shape = None
-            self.active_path = None
-            self._pen_last_point = None
-            self._pen_moved = False
-            self.update()
-            return
-        if self._selection_transform is not None:
-            # 正在移动/缩放选区:右键还原拖拽前的选区和标注位置。
-            self.selection = QRectF(self._transform_origin_selection)
-            self.annotations = list(self._transform_origin_annotations)
-            self._selection_transform = None
-            self._transform_origin_annotations = []
-            self._position_toolbar()
-            self.toolbar.show()
-            self.update()
+        if self._cancel_active_gesture():
             return
         if self.state == "editing":
             self._back_to_selecting()
@@ -1044,6 +1045,33 @@ class CaptureOverlay(QWidget):
             self.update()
             return
         self.cancel()
+
+    def _cancel_active_gesture(self) -> bool:
+        """取消进行中的一笔标注或选区变换;有可取消的手势时返回 True。"""
+        if (
+            self._shape_origin is not None
+            or self._active_shape is not None
+            or self.active_path is not None
+        ):
+            # 只丢弃拖到一半的这一笔,已有标注不动。
+            self._shape_origin = None
+            self._active_shape = None
+            self.active_path = None
+            self._pen_last_point = None
+            self._pen_moved = False
+            self.update()
+            return True
+        if self._selection_transform is not None:
+            # 还原移动/缩放开始前的选区和标注位置。
+            self.selection = QRectF(self._transform_origin_selection)
+            self.annotations = list(self._transform_origin_annotations)
+            self._selection_transform = None
+            self._transform_origin_annotations = []
+            self._position_toolbar()
+            self.toolbar.show()
+            self.update()
+            return True
+        return False
 
     def _back_to_selecting(self) -> None:
         self._discard_inline_text()
@@ -1082,6 +1110,10 @@ class CaptureOverlay(QWidget):
             self.update()
             return
         if event.key() == Qt.Key.Key_Escape:
+            # 拖到一半时 Esc 只取消当前手势,和右键的分级语义一致;
+            # 没有进行中的手势才退出整个截图。
+            if self._cancel_active_gesture():
+                return
             self.cancel()
             return
         if (
@@ -1115,7 +1147,10 @@ class CaptureOverlay(QWidget):
                 self.finish("copy")
                 return
             if event.key() == Qt.Key.Key_S and self.state == "editing":
-                self.finish("save")
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    self.finish("save_as")
+                else:
+                    self.finish("save")
                 return
             if event.key() == Qt.Key.Key_D and self.state == "editing":
                 self.finish("pin")
@@ -1227,7 +1262,7 @@ class CaptureOverlay(QWidget):
         tool = self._current_tool()
         if tool == "text":
             combo, label, unit = self.font_combo, "字号", ""
-        elif tool in {"pen", "arrow", "rect", "ellipse"}:
+        elif tool in {"pen", "highlight", "arrow", "rect", "ellipse"}:
             combo, label, unit = self.width_combo, "粗细", "px"
         else:
             return False
@@ -1301,7 +1336,7 @@ class CaptureOverlay(QWidget):
         if self._resolved or self.selection.isEmpty():
             return
         resolved_action = action or self.action
-        if resolved_action not in {"copy", "save", "pin"}:
+        if resolved_action not in {"copy", "save", "pin", "save_as"}:
             return
         self._commit_inline_text()
         image = render_selection(
@@ -1357,13 +1392,21 @@ class CaptureOverlay(QWidget):
             if index >= 0:
                 combo.setCurrentIndex(index)
 
+    def _pen_style(self) -> tuple[str, float]:
+        """画笔/荧光笔的落笔样式:荧光笔=半透明 + 3 倍宽。"""
+        color = self._current_color()
+        width = float(self.width_combo.currentData())
+        if self._current_tool() == "highlight":
+            translucent = QColor(color)
+            translucent.setAlpha(HIGHLIGHT_ALPHA)
+            color = translucent.name(QColor.NameFormat.HexArgb)
+            width *= HIGHLIGHT_WIDTH_FACTOR
+        return color, width
+
     def _active_annotation(self) -> Annotation | None:
         if self.active_path is not None:
-            return PenAnnotation(
-                self.active_path,
-                self._current_color(),
-                float(self.width_combo.currentData()),
-            )
+            color, width = self._pen_style()
+            return PenAnnotation(self.active_path, color, width)
         return self._active_shape
 
     @staticmethod
@@ -1495,6 +1538,21 @@ class CaptureOverlay(QWidget):
         editor.setFocus(Qt.FocusReason.MouseFocusReason)
         self._sync_annotation_actions()
 
+    def _apply_style_to_text_editor(self) -> None:
+        """把当前颜色/字号实时应用到打开中的文字输入框,保持所见即所得。"""
+        editor = self._text_editor
+        if editor is None:
+            return
+        editor.setStyleSheet(
+            f"QTextEdit {{ color: {self._current_color()}; "
+            "background: rgba(20, 23, 28, 220); border: 1px solid #58a6ff; "
+            "border-radius: 4px; padding: 3px; }}"
+        )
+        font = editor.font()
+        font.setPixelSize(int(self.font_combo.currentData()))
+        editor.setFont(font)
+        self._grow_text_editor(editor)
+
     def _grow_text_editor(self, editor: InlineTextEdit) -> None:
         # 内容变高时输入框跟着长高,直到贴住选区底;避免内部滚动
         # 造成"输入时看到的"与"提交后渲染的"错位。
@@ -1613,9 +1671,12 @@ class CaptureOverlay(QWidget):
     def _sync_tool_options(self) -> None:
         tool = self._current_tool()
         self.color_combo.setEnabled(
-            tool in {"pen", "arrow", "rect", "ellipse", "number", "text"}
+            tool
+            in {"pen", "highlight", "arrow", "rect", "ellipse", "number", "text"}
         )
-        self.width_combo.setEnabled(tool in {"pen", "arrow", "rect", "ellipse"})
+        self.width_combo.setEnabled(
+            tool in {"pen", "highlight", "arrow", "rect", "ellipse"}
+        )
         self.font_combo.setEnabled(tool == "text")
 
     def _resize_handle_points(self) -> dict[str, QPointF]:
