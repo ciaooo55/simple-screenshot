@@ -1,7 +1,23 @@
 PySide6>=6.8,<7
 pyinstaller>=6.0,<7
 pytest>=8,<10
-# OCR:pywinrt 按命名空间分包,只装用到的投影,打包才不会膨胀。
+# 高精度识别引擎(内置 PaddleOCR 模型,微信同类技术;
+# onnxruntime-directml 让识别自动走 GPU,CPU 兜底)。
+# 注意:rapidocr_onnxruntime 硬依赖 CPU 版 onnxruntime,与 DirectML 版
+# 同名冲突,必须单独执行:
+#   python -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
+# 这里只声明它的其余依赖,CI 已按此两步安装。
+onnxruntime-directml>=1.20,<2; sys_platform == "win32"
+numpy>=1.24,<3; sys_platform == "win32"
+opencv-python>=4.8; sys_platform == "win32"
+Pillow>=10; sys_platform == "win32"
+pyclipper>=1.2; sys_platform == "win32"
+PyYAML>=6; sys_platform == "win32"
+Shapely>=2,!=2.0.4; sys_platform == "win32"
+six>=1.15; sys_platform == "win32"
+tqdm>=4; sys_platform == "win32"
+
+# 系统 OCR 兜底:pywinrt 按命名空间分包,只装用到的投影。
 # 平台标记让 Linux/macOS 开发环境跳过这些 Windows 专属包。
 winrt-runtime>=3.2,<4; sys_platform == "win32"
 winrt-Windows.Media.Ocr>=3.2,<4; sys_platform == "win32"

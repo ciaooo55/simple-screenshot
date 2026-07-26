@@ -154,9 +154,14 @@ class AppController:
 
         self._activate_initial_settings()
         QTimer.singleShot(650, self._show_startup_notice)
-        # 预热 OCR 可用性检查(首次要导入 winsdk,约 0.3s):
-        # 放在启动后的空闲时刻,别拖慢第一次弹截图遮罩。
-        QTimer.singleShot(1500, ocr.is_available)
+        # 后台线程真正预热内置 OCR 引擎(加载模型 + 微型推理约 1-2s),
+        # 首次按 W 识别就不用付冷启动成本;放在启动后的空闲时刻。
+        QTimer.singleShot(
+            1500,
+            lambda: threading.Thread(
+                target=ocr.warmup, daemon=True, name="ocr-warmup"
+            ).start(),
+        )
         self.app.aboutToQuit.connect(self.close)
 
     def _create_tray_menu(self) -> QMenu:
@@ -423,9 +428,16 @@ class AppController:
         大图密集文字识别可达数秒,放在 GUI 线程会让整个应用假死。
         """
         if self._ocr_busy:
-            self.notify("正在识别", "上一张图还在识别中,请稍候。")
+            self.notify(
+                "正在识别中",
+                "请稍候(首次使用需要加载识别引擎,会多花几秒)。",
+            )
             return
         self._ocr_busy = True
+        if not ocr.engine_ready():
+            # 托盘应用没有可见窗口,WaitCursor 用户看不到;
+            # 冷启动要几秒,不提示会被当成"按了没反应"。
+            self.notify("正在识别", "首次识别需要加载引擎,请稍候几秒…")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         worker = _OcrWorker()
         worker.finished.connect(self._on_ocr_finished)

@@ -21,7 +21,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: python -m pip install --upgrade pip -r requirements.txt
+        # rapidocr_onnxruntime 硬依赖 CPU 版 onnxruntime,与 DirectML 版
+        # 文件冲突,必须 --no-deps 单装(其余依赖已在 requirements.txt)。
+        run: |
+          python -m pip install --upgrade pip -r requirements.txt
+          python -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
       - name: Run tests
         run: python -m pytest -q
 
@@ -38,7 +42,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: python -m pip install --upgrade pip -r requirements.txt
+        # rapidocr_onnxruntime 硬依赖 CPU 版 onnxruntime,与 DirectML 版
+        # 文件冲突,必须 --no-deps 单装(其余依赖已在 requirements.txt)。
+        run: |
+          python -m pip install --upgrade pip -r requirements.txt
+          python -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
       - name: Build portable executable
         run: .\build.ps1 -Clean
       - name: Publish release

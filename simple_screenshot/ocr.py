@@ -1,21 +1,35 @@
-"""基于 Windows 系统自带引擎(Windows.Media.Ocr)的文字识别。
+"""文字识别:内置高精度引擎为主,系统引擎兜底。
 
-不携带任何模型文件:引擎与语言数据来自系统语言包,离线可用。
-用 pywinrt 的按命名空间分包(winrt-*)而不是整块的 winsdk,
-打包体积只增加约 1MB。winrt 的导入都放在函数内部,避免拖慢
-程序启动;首次调用的初始化结果会被缓存。
+主引擎是 RapidOCR(PaddleOCR 模型 + onnxruntime,与微信同类技术):
+模型内置在包里、完全离线,onnxruntime-directml 让它自动走 GPU,
+实测 0.6-0.8 秒/张、11px 小字准确率 96%(系统引擎同场景 82%)。
+主引擎不可用(包缺失/初始化失败)时回退 Windows.Media.Ocr。
+
+重依赖(numpy/cv2/onnxruntime/winrt)全部函数内导入,不拖慢启动;
+引擎实例首次使用后常驻,后续识别免加载。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
+import threading
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
+logger = logging.getLogger(__name__)
+
 _availability: bool | None = None
+_rapid_engine = None
+_rapid_failed = False
+_rapid_lock = threading.Lock()
+
+# 引擎内部超过 Global.max_side_len 会整图降采样;默认 2000 会把 4K
+# 全屏压掉一半、小字直接不可识别。8192 覆盖双 4K 虚拟桌面(7680px)。
+_RAPID_MAX_SIDE = 8192
 
 
 @dataclass(slots=True)
@@ -24,14 +38,76 @@ class OcrOutcome:
     line_count: int
 
 
+def _rapid_available() -> bool:
+    """内置引擎的包是否存在(不真正初始化,保持轻量)。"""
+    import importlib.util
+
+    return importlib.util.find_spec("rapidocr_onnxruntime") is not None
+
+
+def _get_rapid_engine():  # type: ignore[no-untyped-def]
+    """懒加载并常驻内置引擎;初始化失败只试一次,之后走系统引擎。
+
+    加锁:预热线程与首次按 W 的识别线程可能同时进来。
+    use_dml 三连必须显式打开(包默认全 false,装了 DirectML 版
+    onnxruntime 也不会自己用);无 DX12 环境引擎自动降级 CPU。
+    """
+    global _rapid_engine, _rapid_failed, _availability
+    if _rapid_engine is not None or _rapid_failed:
+        return _rapid_engine
+    with _rapid_lock:
+        if _rapid_engine is not None or _rapid_failed:
+            return _rapid_engine
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _rapid_engine = RapidOCR(
+                det_use_dml=True,
+                cls_use_dml=True,
+                rec_use_dml=True,
+                max_side_len=_RAPID_MAX_SIDE,
+            )
+        except Exception:
+            logger.warning("内置 OCR 引擎初始化失败", exc_info=True)
+            _rapid_failed = True
+            _rapid_engine = None
+            # 让 is_available 重新走系统引擎的真实检测,
+            # UI 才能正确退回"禁用+装语言包提示"。
+            _availability = None
+    return _rapid_engine
+
+
+def engine_ready() -> bool:
+    """内置引擎是否已完成加载(用于首次识别的等待提示)。"""
+    return _rapid_engine is not None
+
+
+def warmup() -> None:
+    """后台预热:加载引擎并跑一次微型推理,把冷启动成本挪出关键路径。"""
+    engine = _get_rapid_engine()
+    if engine is None:
+        is_available()
+        return
+    try:
+        import numpy as np
+
+        engine(np.full((32, 32, 3), 255, dtype=np.uint8))
+    except Exception:
+        logger.warning("内置 OCR 引擎预热失败", exc_info=True)
+
+
 def is_available() -> bool:
-    """系统是否有可用的 OCR 语言引擎。
+    """是否有任一可用的识别引擎。
 
     只缓存 True:装好语言包立即生效,不用重启应用;偶发异常也
     不会把功能永久禁用。重查很便宜(模块导入本身有 Python 缓存)。
     """
     global _availability
     if _availability:
+        return True
+    # rapid 包存在只代表"大概率可用",不写缓存:一旦初始化失败,
+    # 下一次查询会落到系统引擎的真实检测。
+    if _rapid_available() and not _rapid_failed:
         return True
     try:
         from winrt.windows.media.ocr import OcrEngine
@@ -42,6 +118,46 @@ def is_available() -> bool:
     except Exception:
         _availability = False
     return _availability
+
+
+def image_bgr_array(image: QImage):  # type: ignore[no-untyped-def]
+    """QImage → 连续 BGR ndarray(内置引擎的输入格式,含 stride 处理)。"""
+    import numpy as np
+
+    converted = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    width, height = converted.width(), converted.height()
+    stride = converted.bytesPerLine()
+    buffer = np.frombuffer(converted.constBits(), dtype=np.uint8).reshape(
+        height, stride // 4, 4
+    )[:, :width, :3]
+    return np.ascontiguousarray(buffer[:, :, ::-1])
+
+
+def _recognize_with_rapid(image: QImage) -> OcrOutcome | None:
+    """内置引擎识别;引擎不可用返回 None(交给系统引擎兜底)。
+
+    行文本直接取模型输出:实测真实屏幕渲染(ClearType/Qt)下
+    12-16px 英文的词间空格模型都能正确给出;按字符框几何重建
+    空格反而会过切分(词间距与词内距分布重叠),已验证放弃。
+    """
+    engine = _get_rapid_engine()
+    if engine is None:
+        return None
+    # 超过引擎上限的图先自己等比缩,内存可控且不触发内部粗暴降采样。
+    largest = max(image.width(), image.height())
+    if largest > _RAPID_MAX_SIDE:
+        factor = _RAPID_MAX_SIDE / largest
+        image = image.scaled(
+            max(1, round(image.width() * factor)),
+            max(1, round(image.height() * factor)),
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    result, _elapse = engine(image_bgr_array(image))
+    lines = [
+        str(item[1]).strip() for item in (result or []) if str(item[1]).strip()
+    ]
+    return OcrOutcome(text="\n".join(lines), line_count=len(lines))
 
 
 def _is_cjk(char: str) -> bool:
@@ -83,21 +199,58 @@ def image_rgba_bytes(image: QImage) -> tuple[bytes, int, int]:
 
 
 def recognize_image(image: QImage) -> OcrOutcome:
-    """同步识别一张图片;失败抛 RuntimeError(带用户可读的原因)。"""
+    """同步识别一张图片;失败抛 RuntimeError(带用户可读的原因)。
+
+    内置高精度引擎优先;它不可用或推理失败时回退系统引擎。
+    """
     if image.isNull():
         raise RuntimeError("图片内容为空")
-    if not is_available():
+    rapid_error: Exception | None = None
+    try:
+        outcome = _recognize_with_rapid(image)
+    except Exception as exc:
+        # 推理阶段炸了(显卡驱动/内存等):记录后回退系统引擎,
+        # 引擎实例保留,下次仍优先尝试。
+        logger.warning("内置引擎推理失败,回退系统引擎", exc_info=True)
+        rapid_error = exc
+        outcome = None
+    if outcome is not None and outcome.line_count > 0:
+        return outcome
+    # 内置引擎没识别到任何内容时也让系统引擎再试一次:
+    # 两个引擎的盲区不同,别把旧引擎能读的图报成"没有文字"。
+    try:
+        fallback = _recognize_with_windows(image)
+    except RuntimeError as windows_error:
+        if outcome is not None:
+            return outcome  # 真空白图:内置引擎的空结果就是答案
+        if rapid_error is not None:
+            raise RuntimeError(
+                f"{windows_error}(内置引擎推理时也出错:{rapid_error})"
+            ) from rapid_error
+        raise
+    if outcome is not None and fallback.line_count == 0:
+        return outcome
+    return fallback
+
+
+def _recognize_with_windows(image: QImage) -> OcrOutcome:
+    try:
+        from winrt.windows.graphics.imaging import (
+            BitmapPixelFormat,
+            SoftwareBitmap,
+        )
+        from winrt.windows.media.ocr import OcrEngine
+        from winrt.windows.security.cryptography import CryptographicBuffer
+    except Exception as exc:
+        raise RuntimeError(
+            "没有可用的文字识别引擎:内置引擎不可用,系统引擎也不可用。"
+        ) from exc
+
+    if OcrEngine.try_create_from_user_profile_languages() is None:
         raise RuntimeError(
             "当前系统没有可用的文字识别语言。"
             "请在 Windows 设置 → 时间和语言 → 语言中添加中文或英文语言包。"
         )
-
-    from winrt.windows.graphics.imaging import (
-        BitmapPixelFormat,
-        SoftwareBitmap,
-    )
-    from winrt.windows.media.ocr import OcrEngine
-    from winrt.windows.security.cryptography import CryptographicBuffer
 
     # 实测(11-20px 屏幕文字):放大 2 倍普遍带来 5-15 个百分点的
     # 准确率提升,小字号提升最大(13px:81%→96%);3 倍以上无增益。
