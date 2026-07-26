@@ -1083,3 +1083,133 @@ def test_w_key_is_gated_when_ocr_unavailable(qapplication):
     assert not overlay._resolved
     assert overlay.state == "editing"
     overlay.cancel()
+
+
+def test_double_click_with_pen_and_no_stroke_finishes(qapplication):
+    overlay = make_overlay("copy")
+    drag(overlay, QPointF(20, 20), QPointF(200, 150))
+    assert overlay._current_tool() == "pen"
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    # 真实双击序列:press → release → dblclick → release,全程无拖动。
+    overlay.mousePressEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert completed == ["copy"]
+    assert overlay.annotations == []
+
+
+def test_double_click_then_drag_draws_instead_of_finishing(qapplication):
+    overlay = make_overlay("copy")
+    drag(overlay, QPointF(20, 20), QPointF(200, 150))
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    # 快速两笔:第二笔以 dblclick 事件开始但拖出了笔迹 → 照常作画。
+    overlay.mousePressEvent(MouseEventStub(QPointF(60, 60)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(100, 90)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(100, 90)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(62, 60)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(110, 70)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(110, 70)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert completed == []
+    assert len(overlay.annotations) == 2
+    overlay.cancel()
+
+
+def test_double_click_with_rect_tool_and_no_drag_finishes(qapplication):
+    overlay = make_overlay("save")
+    drag(overlay, QPointF(20, 20), QPointF(200, 150))
+    overlay.set_tool("rect")
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert completed == ["save"]
+
+
+def test_jittery_double_click_still_finishes_without_dot(qapplication):
+    overlay = make_overlay("copy")
+    drag(overlay, QPointF(20, 20), QPointF(200, 150))
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    # 真实双击常带 1-2px 抖动(Windows 容差 4px):仍要完成,不留杂点。
+    overlay.mousePressEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(81, 80)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(81, 80)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(80, 80)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(81, 81)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(81, 81)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert completed == ["copy"]
+    assert overlay.annotations == []
+
+
+def test_thin_long_drag_after_dblclick_does_not_finish(qapplication):
+    overlay = make_overlay("copy")
+    drag(overlay, QPointF(20, 20), QPointF(260, 150))
+    overlay.set_tool("rect")
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    # 双击后拖出 50×2px 的细长矩形:形状虽无效,但绝不是"没拖动"。
+    overlay.mousePressEvent(MouseEventStub(QPointF(60, 60)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(60, 60)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(60, 60)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(110, 62)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(110, 62)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert overlay.state == "editing"
+    assert not overlay._resolved
+    overlay.cancel()
+    qapplication.processEvents()
+    assert completed == []
+
+
+def test_double_click_on_resize_handle_zone_still_finishes(qapplication):
+    overlay = make_overlay("copy")
+    drag(overlay, QPointF(20, 20), QPointF(160, 120))
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    # 角把手命中区(向选区内延伸 7px)内双击,也必须能完成。
+    overlay.mousePressEvent(MouseEventStub(QPointF(23, 23)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(23, 23)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(23, 23)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(23, 23)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert completed == ["copy"]
+
+
+def test_tiny_jitter_single_click_leaves_no_dot(qapplication):
+    overlay = make_overlay()
+    drag(overlay, QPointF(20, 20), QPointF(200, 150))
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(51, 50)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(51, 50)))  # type: ignore[arg-type]
+
+    assert overlay.annotations == []
+
+    # 超过阈值的正常短笔画仍然要能画出来。
+    overlay.mousePressEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(58, 55)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(58, 55)))  # type: ignore[arg-type]
+
+    assert len(overlay.annotations) == 1
+    overlay.cancel()

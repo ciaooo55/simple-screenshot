@@ -213,9 +213,11 @@ class CaptureOverlay(QWidget):
         self._copied_color_notice: str | None = None
         self._style_notice: str | None = None
         self._pen_last_point: QPointF | None = None
+        self._pen_press_point: QPointF | None = None
         self._pen_moved = False
         self._help_visible = False
         self._suppress_next_dblclick = False
+        self._dblclick_finish_candidate = False
         self._text_editor: InlineTextEdit | None = None
         self._text_position = QPointF()
         self._selection_before_reselect: QRectF | None = None
@@ -832,7 +834,13 @@ class CaptureOverlay(QWidget):
             self.update()
             return
 
-        resize_edge = self._resize_edge_at(point)
+        # 双击完成候选转发来的按下要跳过缩放把手判定:手柄命中区向选区
+        # 内延伸 7px,小选区里几乎无处双击,不能让它吞掉完成手势。
+        resize_edge = (
+            None
+            if self._dblclick_finish_candidate
+            else self._resize_edge_at(point)
+        )
         if resize_edge is not None:
             self._begin_selection_transform(resize_edge, point)
             return
@@ -866,6 +874,7 @@ class CaptureOverlay(QWidget):
             return
         self.active_path = QPainterPath(point)
         self._pen_last_point = QPointF(point)
+        self._pen_press_point = QPointF(point)
         self._pen_moved = False
         self.update()
 
@@ -906,7 +915,17 @@ class CaptureOverlay(QWidget):
             )
             self.active_path.quadTo(last, mid)
             self._pen_last_point = QPointF(point)
-            self._pen_moved = True
+            if not self._pen_moved:
+                # 与形状工具一致的 3px 阈值:双击自带的 1-3px 抖动
+                # 不算"拖动",否则真实双击时灵时不灵还留下杂点。
+                origin = self._pen_press_point or last
+                if (
+                    math.hypot(
+                        point.x() - origin.x(), point.y() - origin.y()
+                    )
+                    >= 3.0
+                ):
+                    self._pen_moved = True
             self.update()
             return
         if self.state == "editing":
@@ -917,6 +936,9 @@ class CaptureOverlay(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        # 一次性消费双击完成候选:只有本次释放确实没画出内容才生效。
+        dblclick_finish = self._dblclick_finish_candidate
+        self._dblclick_finish_candidate = False
         if self._selection_transform is not None:
             if self._selection_transform == "move":
                 dx = self.selection.left() - self._transform_origin_selection.left()
@@ -964,22 +986,43 @@ class CaptureOverlay(QWidget):
             self._accept_selection()
             return
         if self._shape_origin is not None:
-            shape = self._build_shape(
-                self._shape_origin, self._clamp_point(event.position())
+            release_point = self._clamp_point(event.position())
+            # "没拖动"按真实位移判定,不能拿形状有效性冒充:
+            # 50×2px 的细长拖拽同样返回 None,但绝不是双击。
+            dragged = (
+                math.hypot(
+                    release_point.x() - self._shape_origin.x(),
+                    release_point.y() - self._shape_origin.y(),
+                )
+                >= 3.0
             )
+            shape = self._build_shape(self._shape_origin, release_point)
             self._shape_origin = None
             self._active_shape = None
             if shape is not None:
                 self._push_history()
                 self.annotations.append(shape)
+            elif dblclick_finish and not dragged:
+                # 双击且确实没拖动:按默认动作完成截图。
+                self.finish()
+                return
             self._sync_annotation_actions()
             self.update()
             return
         if self.active_path is not None:
+            if dblclick_finish and not self._pen_moved:
+                # 双击没有落笔画线(3px 抖动容差内):按默认动作完成。
+                self.active_path = None
+                self._pen_last_point = None
+                self._pen_press_point = None
+                self.finish()
+                return
             if self._pen_moved:
                 # 平滑段终点停在中点,补一段到真实抬笔位置。
                 self.active_path.lineTo(self._clamp_point(event.position()))
-            if self.active_path.elementCount() > 1:
+            # 亚阈值的抖动路径不提交:免得单击/双击留下肉眼难辨的杂点
+            # 被烧进导出图,还占一格撤销历史。
+            if self._pen_moved and self.active_path.elementCount() > 1:
                 self._push_history()
                 color, width = self._pen_style()
                 self.annotations.append(
@@ -987,6 +1030,7 @@ class CaptureOverlay(QWidget):
                 )
             self.active_path = None
             self._pen_last_point = None
+            self._pen_press_point = None
             self._pen_moved = False
             self._sync_annotation_actions()
             self.update()
@@ -1003,11 +1047,17 @@ class CaptureOverlay(QWidget):
             if self.state == "editing" and self.selection.contains(
                 event.position()
             ):
-                if self._current_tool() == "select":
+                tool = self._current_tool()
+                if tool == "select":
                     self.finish()
                 else:
-                    # 快速连击是标注操作(比如连放序号),
-                    # 把双击转成普通按下,让第二个标注正常落下。
+                    # 快速连击是标注操作(比如连放序号),把双击转成普通
+                    # 按下,让第二个标注正常落下。对画笔/形状类工具再多
+                    # 一层判断:若这次双击最终没画出内容(释放时无拖动),
+                    # 就视为"双击完成",执行默认动作——默认工具是画笔,
+                    # 用户习惯的"双击直接复制/保存"必须继续可用。
+                    if tool in {"pen", "highlight"} | DRAG_SHAPE_TOOLS:
+                        self._dblclick_finish_candidate = True
                     self.mousePressEvent(event)
                 event.accept()
                 return
@@ -1071,6 +1121,7 @@ class CaptureOverlay(QWidget):
             self._active_shape = None
             self.active_path = None
             self._pen_last_point = None
+            self._pen_press_point = None
             self._pen_moved = False
             self.update()
             return True
@@ -1094,6 +1145,7 @@ class CaptureOverlay(QWidget):
         self._active_shape = None
         self.active_path = None
         self._pen_last_point = None
+        self._pen_press_point = None
         self._pen_moved = False
         self._selection_transform = None
         self._discard_reselection_backup()
