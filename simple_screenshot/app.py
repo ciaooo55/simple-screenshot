@@ -6,7 +6,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSignalBlocker, QSize, QTimer, Qt
+import threading
+
+from PySide6.QtCore import (
+    QObject,
+    QPoint,
+    QSignalBlocker,
+    QSize,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -26,6 +36,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from . import ocr
 from .capture import CaptureOverlay, capture_virtual_desktop
 from .config import AppSettings, SettingsStore, default_settings
 from .hotkeys import Hotkey, HotkeyManager, parse_hotkey
@@ -38,9 +49,17 @@ from .pin_window import PinWindow
 from .settings_dialog import SettingsDialog
 from .single_instance import SingleInstance
 from .startup import set_start_with_windows
+from .text_result_dialog import TextResultDialog
 
 
 APP_TITLE = "简易截图工具"
+
+
+class _OcrWorker(QObject):
+    """跨线程信使:工作线程发射,槽在主线程执行(自动排队连接)。"""
+
+    finished = Signal(object)
+    failed = Signal(str)
 
 
 def bundled_resource(relative_path: str) -> Path:
@@ -94,6 +113,9 @@ class AppController:
         self.overlay: CaptureOverlay | None = None
         self.pin_windows: list[PinWindow] = []
         self._pins_hidden_for_capture: list[PinWindow] = []
+        self._text_dialogs: list[TextResultDialog] = []
+        self._ocr_busy = False
+        self._ocr_worker: _OcrWorker | None = None
         self._last_save_as_dir: Path | None = None
         try:
             cleanup_stale_drag_copies()
@@ -132,6 +154,9 @@ class AppController:
 
         self._activate_initial_settings()
         QTimer.singleShot(650, self._show_startup_notice)
+        # 预热 OCR 可用性检查(首次要导入 winsdk,约 0.3s):
+        # 放在启动后的空闲时刻,别拖慢第一次弹截图遮罩。
+        QTimer.singleShot(1500, ocr.is_available)
         self.app.aboutToQuit.connect(self.close)
 
     def _create_tray_menu(self) -> QMenu:
@@ -385,7 +410,67 @@ class AppController:
         if action == "save_as":
             self._save_image_as(image, clipboard_on_cancel=True)
             return
+        if action == "ocr":
+            self._recognize_image(image)
+            return
         self._save_image(image)
+
+    def _recognize_image(self, image: QImage) -> None:
+        """后台线程跑系统 OCR,完成后回主线程弹结果面板。
+
+        大图密集文字识别可达数秒,放在 GUI 线程会让整个应用假死。
+        """
+        if self._ocr_busy:
+            self.notify("正在识别", "上一张图还在识别中,请稍候。")
+            return
+        self._ocr_busy = True
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        worker = _OcrWorker()
+        worker.finished.connect(self._on_ocr_finished)
+        worker.failed.connect(self._on_ocr_failed)
+        self._ocr_worker = worker  # 线程结束前必须持有引用,防 GC
+        image_copy = QImage(image)
+
+        def run() -> None:
+            try:
+                outcome = ocr.recognize_image(image_copy)
+            except Exception as exc:
+                worker.failed.emit(str(exc))
+            else:
+                worker.finished.emit(outcome)
+
+        threading.Thread(target=run, daemon=True, name="ocr").start()
+
+    def _finish_ocr_request(self) -> None:
+        self._ocr_busy = False
+        self._ocr_worker = None
+        QApplication.restoreOverrideCursor()
+
+    def _on_ocr_failed(self, message: str) -> None:
+        self._finish_ocr_request()
+        self.notify("识别失败", message, warning=True)
+
+    def _on_ocr_finished(self, outcome: ocr.OcrOutcome) -> None:
+        self._finish_ocr_request()
+        if not outcome.text:
+            self.notify(
+                "未识别到文字",
+                "图片里没有可识别的文字内容;艺术字或过小的文字可能无法识别。",
+                warning=True,
+            )
+            return
+        dialog = TextResultDialog(outcome.text)
+        self._text_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda *_args, current=dialog: (
+                self._text_dialogs.remove(current)
+                if current in self._text_dialogs
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _save_image(self, image: QImage) -> bool:
         try:
@@ -424,6 +509,7 @@ class AppController:
         pin.save_requested.connect(
             lambda saved, pin=pin: self._save_pin_image(pin, saved)
         )
+        pin.ocr_requested.connect(self._recognize_image)
         pin.save_as_requested.connect(
             lambda saved, pin=pin: self._save_pin_image_as(pin, saved)
         )

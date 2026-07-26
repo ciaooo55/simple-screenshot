@@ -181,12 +181,12 @@ class SettingsDialog(QDialog):
             "Shift 约束正圆与 45° 箭头；Ctrl+Z 撤销、Ctrl+Y 重做；"
             "F1 查看全部快捷键。<br>"
             "<b>完成</b>：双击或 Enter 执行默认动作；Ctrl+C 复制、Ctrl+S 保存、"
-            "Ctrl+Shift+S 另存为、Ctrl+D 钉住；右键逐级返回，Esc 取消"
-            "（拖拽中只取消当前一笔）。<br>"
+            "Ctrl+Shift+S 另存为、Ctrl+D 钉住、W 识别选区文字；"
+            "右键逐级返回，Esc 取消（拖拽中只取消当前一笔）。<br>"
             "<b>贴图</b>：拖动移动（贴边自动吸附），Ctrl+拖动拖出为文件，"
             "滚轮以光标为中心缩放，Ctrl+滚轮调透明度，方向键微调，"
-            "双击或 Ctrl+0 还原，右键可开鼠标穿透（托盘恢复），Esc 关闭；"
-            "托盘菜单可直接贴剪贴板里的图片。",
+            "双击或 Ctrl+0 还原，右键可开鼠标穿透（托盘恢复）或识别文字，"
+            "Esc 关闭；托盘菜单可直接贴剪贴板里的图片。",
             self,
         )
         note.setTextFormat(Qt.TextFormat.RichText)

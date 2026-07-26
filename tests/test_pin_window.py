@@ -251,3 +251,15 @@ def test_click_through_restores_user_opacity(qapplication):
 
     assert abs(pin.windowOpacity() - 0.4) < 0.05
     pin.close()
+
+
+def test_request_ocr_emits_image(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    received: list[QImage] = []
+    pin.ocr_requested.connect(lambda image: received.append(image))
+
+    pin.request_ocr()
+
+    assert len(received) == 1
+    assert received[0].size() == QSize(100, 60)
+    pin.close()

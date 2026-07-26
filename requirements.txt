@@ -1,3 +1,13 @@
 PySide6>=6.8,<7
 pyinstaller>=6.0,<7
 pytest>=8,<10
+# OCR:pywinrt 按命名空间分包,只装用到的投影,打包才不会膨胀。
+# 平台标记让 Linux/macOS 开发环境跳过这些 Windows 专属包。
+winrt-runtime>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Security.Cryptography>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Globalization>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Foundation>=3.2,<4; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=3.2,<4; sys_platform == "win32"

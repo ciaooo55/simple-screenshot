@@ -1040,3 +1040,46 @@ def test_toolbar_children_never_take_focus(qapplication):
     assert overlay.font_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert overlay.color_combo.focusPolicy() == Qt.FocusPolicy.NoFocus
     overlay.cancel()
+
+
+def test_w_key_finishes_with_ocr_action(qapplication):
+    overlay = make_overlay()
+    drag(overlay, QPointF(20, 20), QPointF(160, 120))
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    press_key(overlay, Qt.Key.Key_W)
+    qapplication.processEvents()
+
+    assert completed == ["ocr"]
+
+
+def test_toolbar_has_ocr_button_wired_to_finish(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(10, 10, 200, 100)
+    overlay.state = "editing"
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    overlay.ocr_button.click()
+    qapplication.processEvents()
+
+    assert completed == ["ocr"] or not overlay.ocr_button.isEnabled()
+    overlay.cancel()
+
+
+def test_w_key_is_gated_when_ocr_unavailable(qapplication):
+    overlay = make_overlay()
+    drag(overlay, QPointF(20, 20), QPointF(160, 120))
+    overlay.ocr_button.setEnabled(False)
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    press_key(overlay, Qt.Key.Key_W)
+    qapplication.processEvents()
+
+    # OCR 不可用时按 W 不能销毁截图会话。
+    assert completed == []
+    assert not overlay._resolved
+    assert overlay.state == "editing"
+    overlay.cancel()

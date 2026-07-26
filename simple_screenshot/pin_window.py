@@ -46,6 +46,7 @@ class PinWindow(QWidget):
     closed = Signal(object)
     save_requested = Signal(QImage)
     save_as_requested = Signal(QImage)
+    ocr_requested = Signal(QImage)
     close_all_requested = Signal()
 
     def __init__(
@@ -151,6 +152,9 @@ class PinWindow(QWidget):
 
     def show_save_result(self, success: bool) -> None:
         self._show_hud("已保存" if success else "保存失败,详见通知")
+
+    def request_ocr(self) -> None:
+        self.ocr_requested.emit(self._image)
 
     @property
     def click_through(self) -> bool:
@@ -388,6 +392,12 @@ class PinWindow(QWidget):
         copy_action = menu.addAction("复制图片\tCtrl+C")
         save_action = menu.addAction("保存图片\tCtrl+S")
         save_as_action = menu.addAction("另存为…\tCtrl+Shift+S")
+        ocr_action = menu.addAction("识别文字")
+        from .ocr import is_available as ocr_available
+
+        if not ocr_available():
+            ocr_action.setEnabled(False)
+            ocr_action.setText("识别文字（缺少系统 OCR 语言）")
         drag_hint = menu.addAction("拖出文件：Ctrl+按住拖动")
         drag_hint.setEnabled(False)
         reset_action = menu.addAction("恢复原始大小\t双击 / Ctrl+0")
@@ -402,6 +412,8 @@ class PinWindow(QWidget):
             self.save_requested.emit(self._image)
         elif chosen == save_as_action:
             self.save_as_requested.emit(self._image)
+        elif chosen == ocr_action:
+            self.request_ocr()
         elif chosen == reset_action:
             self.reset_view()
         elif chosen == through_action:

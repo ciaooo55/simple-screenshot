@@ -352,6 +352,7 @@ class CaptureOverlay(QWidget):
         shortcut_hint = QLabel(f"双击/Enter：{default_action_text}", toolbar)
         shortcut_hint.setStyleSheet("color: #c9d1d9; padding: 0 3px;")
 
+        self.ocr_button = QPushButton("识别", toolbar)
         self.pin_button = QPushButton("钉住", toolbar)
         self.copy_button = QPushButton("复制", toolbar)
         self.save_button = QPushButton("保存", toolbar)
@@ -369,12 +370,22 @@ class CaptureOverlay(QWidget):
         self.save_button.setToolTip(
             "保存到默认目录（Ctrl+S）；另存为…（Ctrl+Shift+S）"
         )
+        from .ocr import is_available as ocr_available
+
+        if ocr_available():
+            self.ocr_button.setToolTip("识别选区文字并弹出结果面板（W）")
+        else:
+            self.ocr_button.setEnabled(False)
+            self.ocr_button.setToolTip(
+                "系统缺少可用的 OCR 语言,请在 Windows 设置中添加中文/英文语言包"
+            )
 
         layout.addWidget(self.undo_button)
         layout.addWidget(self.redo_button)
         layout.addWidget(self.clear_button)
         layout.addWidget(cancel_button)
         layout.addWidget(shortcut_hint)
+        layout.addWidget(self.ocr_button)
         layout.addWidget(self.pin_button)
         layout.addWidget(self.copy_button)
         layout.addWidget(self.save_button)
@@ -383,6 +394,7 @@ class CaptureOverlay(QWidget):
         self.redo_button.clicked.connect(self.redo)
         self.clear_button.clicked.connect(self.clear_annotations)
         cancel_button.clicked.connect(self.cancel)
+        self.ocr_button.clicked.connect(lambda: self.finish("ocr"))
         self.pin_button.clicked.connect(lambda: self.finish("pin"))
         self.copy_button.clicked.connect(lambda: self.finish("copy"))
         self.save_button.clicked.connect(lambda: self.finish("save"))
@@ -558,6 +570,7 @@ class CaptureOverlay(QWidget):
         ("方向键 / Ctrl+方向键", "移动选区 / 调整大小(加 Shift ×10)"),
         ("V P G A R O", "选择 · 画笔 · 荧光 · 箭头 · 矩形 · 椭圆"),
         ("N M T", "序号 · 马赛克 · 文字(数字键同效)"),
+        ("W", "识别选区文字(OCR)"),
         ("滚轮", "调画笔粗细 / 文字字号"),
         ("Shift 拖动", "正方形 / 正圆 / 45° 箭头"),
         ("Ctrl+Z / Ctrl+Y", "撤销 / 重做"),
@@ -1194,6 +1207,17 @@ class CaptureOverlay(QWidget):
                     )
                 event.accept()
                 return
+            if not event.modifiers() and event.key() == Qt.Key.Key_W:
+                # 与工具栏按钮同一道门:OCR 不可用时绝不能 finish,
+                # 否则截图会话连同标注被白白销毁,只换来一条报错。
+                if self.ocr_button.isEnabled():
+                    self.finish("ocr")
+                else:
+                    self._style_notice = "系统缺少 OCR 语言,无法识别文字"
+                    QTimer.singleShot(1600, self._clear_style_notice)
+                    self.update()
+                event.accept()
+                return
             if not event.modifiers() and event.key() in TOOL_SHORTCUTS:
                 self.set_tool(TOOL_SHORTCUTS[event.key()])
                 event.accept()
@@ -1336,7 +1360,7 @@ class CaptureOverlay(QWidget):
         if self._resolved or self.selection.isEmpty():
             return
         resolved_action = action or self.action
-        if resolved_action not in {"copy", "save", "pin", "save_as"}:
+        if resolved_action not in {"copy", "save", "pin", "save_as", "ocr"}:
             return
         self._commit_inline_text()
         image = render_selection(
