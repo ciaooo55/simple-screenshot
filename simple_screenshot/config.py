@@ -10,7 +10,9 @@ from typing import Any
 
 
 APP_NAME = "SimpleScreenshot"
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
+SUPPORTED_VERSIONS = {1, 2}
+PIN_HOTKEY_CANDIDATES = ("Alt+Q", "Alt+W", "Alt+E", "Alt+X")
 
 
 def application_base_dir() -> Path:
@@ -31,6 +33,7 @@ class AppSettings:
     version: int
     copy_hotkey: str
     save_hotkey: str
+    pin_hotkey: str
     save_directory: str
     start_with_windows: bool
 
@@ -44,6 +47,7 @@ def default_settings(base_dir: Path | None = None) -> AppSettings:
         version=CONFIG_VERSION,
         copy_hotkey="Alt+A",
         save_hotkey="Alt+S",
+        pin_hotkey="Alt+Q",
         save_directory=str(root / "tp"),
         start_with_windows=False,
     )
@@ -96,11 +100,12 @@ class SettingsStore:
         if not isinstance(raw, dict):
             raise ValueError("设置文件根节点不是对象")
         version = raw.get("version", CONFIG_VERSION)
-        if version != CONFIG_VERSION:
+        if version not in SUPPORTED_VERSIONS:
             raise ValueError(f"不支持的设置版本：{version}")
 
         copy_hotkey = raw.get("copy_hotkey", defaults.copy_hotkey)
         save_hotkey = raw.get("save_hotkey", defaults.save_hotkey)
+        pin_hotkey = raw.get("pin_hotkey")
         save_directory = raw.get("save_directory", defaults.save_directory)
         start_with_windows = raw.get(
             "start_with_windows", defaults.start_with_windows
@@ -110,6 +115,10 @@ class SettingsStore:
             raise ValueError("复制快捷键无效")
         if not isinstance(save_hotkey, str) or not save_hotkey.strip():
             raise ValueError("保存快捷键无效")
+        if pin_hotkey is not None and (
+            not isinstance(pin_hotkey, str) or not pin_hotkey.strip()
+        ):
+            raise ValueError("钉图快捷键无效")
         if not isinstance(save_directory, str) or not save_directory.strip():
             raise ValueError("保存目录无效")
         if not isinstance(start_with_windows, bool):
@@ -124,10 +133,24 @@ class SettingsStore:
         if copy_parsed == save_parsed:
             raise ValueError("复制和保存快捷键不能相同")
 
+        if pin_hotkey is None:
+            # 从 v1 迁移：为钉图挑一个不与现有快捷键冲突的默认值。
+            for candidate in PIN_HOTKEY_CANDIDATES:
+                pin_parsed = parse_hotkey(candidate)
+                if pin_parsed not in {copy_parsed, save_parsed}:
+                    break
+            else:
+                raise ValueError("无法为钉图快捷键选择默认值")
+        else:
+            pin_parsed = parse_hotkey(pin_hotkey)
+            if pin_parsed in {copy_parsed, save_parsed}:
+                raise ValueError("钉图快捷键不能与其他快捷键相同")
+
         return AppSettings(
             version=CONFIG_VERSION,
             copy_hotkey=copy_parsed.display,
             save_hotkey=save_parsed.display,
+            pin_hotkey=pin_parsed.display,
             save_directory=save_directory.strip(),
             start_with_windows=start_with_windows,
         )

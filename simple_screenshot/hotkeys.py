@@ -17,8 +17,31 @@ MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 WM_HOTKEY = 0x0312
 
-HOTKEY_COPY_ID = 0xB101
-HOTKEY_SAVE_ID = 0xB102
+HOTKEY_IDS: dict[str, int] = {
+    "copy": 0xB101,
+    "save": 0xB102,
+    "pin": 0xB103,
+}
+HOTKEY_ACTIONS: dict[int, str] = {
+    identifier: action for action, identifier in HOTKEY_IDS.items()
+}
+ACTION_TITLES: dict[str, str] = {
+    "copy": "截图并复制",
+    "save": "截图并保存",
+    "pin": "截图并钉住",
+}
+
+# 无修饰键时允许单独注册的按键:F1-F24 与 PrintScreen。
+# 其余按键裸注册会在全系统范围劫持该键(比如裸 A 让所有程序打不出 a)。
+_BARE_KEY_WHITELIST = set(range(0x70, 0x88)) | {0x2C}
+
+
+def _validate_modifiers(modifiers: int, virtual_key: int) -> None:
+    if modifiers == 0 and virtual_key not in _BARE_KEY_WHITELIST:
+        raise ValueError(
+            "单独的字母/数字等按键会屏蔽其他程序,请搭配 "
+            "Ctrl/Alt/Shift/Win 使用(F1-F24、PrintScreen 可单独使用)"
+        )
 
 
 SPECIAL_KEYS: dict[str, int] = {
@@ -102,6 +125,7 @@ def parse_hotkey(value: str) -> Hotkey:
     if key_token is None:
         raise ValueError("请同时按下一个非修饰键")
     virtual_key, display_name = _parse_key_token(key_token)
+    _validate_modifiers(modifiers, virtual_key)
     return Hotkey(modifiers, virtual_key, display_name)
 
 
@@ -155,6 +179,7 @@ def hotkey_from_key_event(event: QKeyEvent) -> Hotkey:
             name = text
         else:
             raise ValueError("这个按键暂不支持，请换一个快捷键")
+    _validate_modifiers(modifiers, native_key)
     return Hotkey(modifiers, native_key, name)
 
 
@@ -237,22 +262,45 @@ class HotkeyManager(QObject):
                 backend = WindowsHotkeyBackend()
         self.backend = backend
         self.current: dict[int, Hotkey] = {}
+        self._suspended = False
 
-    def apply(self, copy_hotkey: Hotkey, save_hotkey: Hotkey) -> tuple[bool, str]:
-        if copy_hotkey == save_hotkey:
-            return False, "复制和保存快捷键不能相同"
+    def suspend(self) -> None:
+        """临时放开系统层拦截(录制新快捷键时用),映射保持不变。"""
+        if self._suspended:
+            return
+        self._suspended = True
+        for identifier in self.current:
+            self.backend.unregister(identifier)
+
+    def resume(self) -> None:
+        if not self._suspended:
+            return
+        self._suspended = False
+        for identifier, hotkey in self.current.items():
+            self.backend.register(identifier, hotkey)
+
+    def apply(self, hotkeys: dict[str, Hotkey]) -> tuple[bool, str]:
+        # apply 之后注册状态以结果为准,挂起标记必须清掉。
+        self._suspended = False
+        unknown = set(hotkeys) - set(HOTKEY_IDS)
+        if unknown:
+            return False, f"未知的快捷键动作：{'、'.join(sorted(unknown))}"
+        values = list(hotkeys.values())
+        if len(values) != len(set(values)):
+            return False, "多个动作不能使用相同的快捷键"
 
         previous = dict(self.current)
         self.unregister_all()
         requested = {
-            HOTKEY_COPY_ID: copy_hotkey,
-            HOTKEY_SAVE_ID: save_hotkey,
+            HOTKEY_IDS[action]: hotkey for action, hotkey in hotkeys.items()
         }
         registered: list[int] = []
         failed: Hotkey | None = None
+        failed_action: str | None = None
         for identifier, hotkey in requested.items():
             if not self.backend.register(identifier, hotkey):
                 failed = hotkey
+                failed_action = HOTKEY_ACTIONS.get(identifier)
                 break
             registered.append(identifier)
 
@@ -270,7 +318,9 @@ class HotkeyManager(QObject):
                 self.current[identifier] = hotkey
             else:
                 restore_failed = True
-        message = f"快捷键 {failed.display} 已被其他程序占用或被系统保留"
+        title = ACTION_TITLES.get(failed_action or "", failed_action or "")
+        prefix = f"「{title}」的" if title else ""
+        message = f"{prefix}快捷键 {failed.display} 已被其他程序占用或被系统保留"
         if restore_failed:
             message += "；原快捷键恢复失败，请重新设置"
         return False, message
@@ -281,10 +331,9 @@ class HotkeyManager(QObject):
         self.current.clear()
 
     def _handle_identifier(self, identifier: int) -> None:
-        if identifier == HOTKEY_COPY_ID:
-            self.activated.emit("copy")
-        elif identifier == HOTKEY_SAVE_ID:
-            self.activated.emit("save")
+        action = HOTKEY_ACTIONS.get(identifier)
+        if action is not None:
+            self.activated.emit(action)
 
     def close(self) -> None:
         self.unregister_all()

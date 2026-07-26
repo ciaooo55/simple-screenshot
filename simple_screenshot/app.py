@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPoint, QSignalBlocker, QSize, QTimer, Qt
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -15,8 +17,9 @@ from PySide6.QtWidgets import (
 
 from .capture import CaptureOverlay, capture_virtual_desktop
 from .config import AppSettings, SettingsStore, default_settings
-from .hotkeys import HotkeyManager, parse_hotkey
+from .hotkeys import Hotkey, HotkeyManager, parse_hotkey
 from .output import save_png_atomic
+from .pin_window import PinWindow
 from .settings_dialog import SettingsDialog
 from .single_instance import SingleInstance
 from .startup import set_start_with_windows
@@ -74,19 +77,37 @@ class AppController:
         self.hotkeys = HotkeyManager()
         self.hotkeys.activated.connect(self.request_capture)
         self.overlay: CaptureOverlay | None = None
+        self.pin_windows: list[PinWindow] = []
         self._capture_pending = False
         self._closed = False
+        self._last_saved_path: Path | None = None
+        self._last_image: QImage | None = None
+        self._settings_was_visible = False
         self._startup_warnings: list[str] = []
         if self.store.last_warning:
             self._startup_warnings.append(self.store.last_warning)
 
         self.settings_dialog = SettingsDialog(self.apply_settings)
         self.settings_dialog.setWindowIcon(self.icon)
+        # 录制快捷键的瞬间放开系统级注册,按现有热键才能被输入框收到
+        # (否则想互换两个热键会直接触发截图);录制结束立即恢复。
+        self.settings_dialog.hotkey_capture_toggled.connect(
+            self._on_hotkey_capture_toggled
+        )
         self.tray = QSystemTrayIcon(self.icon, self.app)
-        self.tray.setToolTip(APP_TITLE)
         self.tray.setContextMenu(self._create_tray_menu())
         self.tray.activated.connect(self._tray_activated)
+        self.tray.messageClicked.connect(self._notification_clicked)
         self.tray.show()
+        # 单击托盘立即截图;双击打开设置。两者靠双击间隔计时器区分。
+        self._tray_click_timer = QTimer(self.app)
+        self._tray_click_timer.setSingleShot(True)
+        self._tray_click_timer.setInterval(
+            QApplication.doubleClickInterval()
+        )
+        self._tray_click_timer.timeout.connect(
+            lambda: self.request_capture("copy")
+        )
 
         self._activate_initial_settings()
         QTimer.singleShot(650, self._show_startup_notice)
@@ -96,6 +117,11 @@ class AppController:
         menu = QMenu()
         copy_action = QAction("截图并复制", menu)
         save_action = QAction("截图并保存", menu)
+        pin_action = QAction("截图并钉住", menu)
+        fullscreen_action = QAction("全屏截图", menu)
+        self.save_last_action = QAction("保存最近一张截图", menu)
+        self.close_pins_action = QAction("关闭所有贴图", menu)
+        folder_action = QAction("打开截图文件夹", menu)
         settings_action = QAction("设置…", menu)
         self.startup_action = QAction("开机启动", menu)
         self.startup_action.setCheckable(True)
@@ -103,36 +129,73 @@ class AppController:
 
         copy_action.triggered.connect(lambda: self.request_capture("copy"))
         save_action.triggered.connect(lambda: self.request_capture("save"))
+        pin_action.triggered.connect(lambda: self.request_capture("pin"))
+        fullscreen_action.triggered.connect(
+            lambda: self.request_capture("copy", fullscreen=True)
+        )
+        self.save_last_action.triggered.connect(self._save_last_image)
+        self.close_pins_action.triggered.connect(self.close_all_pins)
+        folder_action.triggered.connect(self.open_save_directory)
         settings_action.triggered.connect(self.show_settings)
         self.startup_action.triggered.connect(self._toggle_startup)
         exit_action.triggered.connect(self.quit)
 
         menu.addAction(copy_action)
         menu.addAction(save_action)
+        menu.addAction(pin_action)
+        menu.addAction(fullscreen_action)
         menu.addSeparator()
+        menu.addAction(self.save_last_action)
+        menu.addAction(self.close_pins_action)
+        menu.addAction(folder_action)
         menu.addAction(settings_action)
         menu.addAction(self.startup_action)
         menu.addSeparator()
         menu.addAction(exit_action)
+        menu.aboutToShow.connect(self._sync_tray_menu)
         return menu
+
+    def _sync_tray_menu(self) -> None:
+        self.save_last_action.setEnabled(self._last_image is not None)
+        self.close_pins_action.setEnabled(bool(self.pin_windows))
+
+    def _save_last_image(self) -> None:
+        if self._last_image is not None:
+            self._save_image(self._last_image)
+
+    def _parse_hotkey_mapping(self, settings: AppSettings) -> dict[str, Hotkey]:
+        return {
+            "copy": parse_hotkey(settings.copy_hotkey),
+            "save": parse_hotkey(settings.save_hotkey),
+            "pin": parse_hotkey(settings.pin_hotkey),
+        }
 
     def _activate_initial_settings(self) -> None:
         try:
-            copy_hotkey = parse_hotkey(self.settings.copy_hotkey)
-            save_hotkey = parse_hotkey(self.settings.save_hotkey)
+            mapping = self._parse_hotkey_mapping(self.settings)
         except ValueError as exc:
             self._startup_warnings.append(f"快捷键设置无效，已恢复默认值：{exc}")
             self.settings = default_settings(self.store.base_dir)
-            copy_hotkey = parse_hotkey(self.settings.copy_hotkey)
-            save_hotkey = parse_hotkey(self.settings.save_hotkey)
+            mapping = self._parse_hotkey_mapping(self.settings)
             try:
                 self.store.save(self.settings)
             except OSError as save_error:
                 self._startup_warnings.append(f"默认设置保存失败：{save_error}")
 
-        registered, message = self.hotkeys.apply(copy_hotkey, save_hotkey)
+        registered, message = self.hotkeys.apply(mapping)
         if not registered:
             self._startup_warnings.append(message)
+            # 逐键降级:哪个键被占用就跳过哪个,其余热键必须保住。
+            # apply 失败时会恢复到上一次成功的组合,所以增量尝试是安全的。
+            working: dict[str, Hotkey] = {}
+            for action in ("copy", "save", "pin"):
+                candidate = dict(working)
+                candidate[action] = mapping[action]
+                ok, fail_message = self.hotkeys.apply(candidate)
+                if ok:
+                    working = candidate
+                elif fail_message != message:
+                    self._startup_warnings.append(fail_message)
 
         try:
             set_start_with_windows(self.settings.start_with_windows)
@@ -145,35 +208,48 @@ class AppController:
                 self._startup_warnings.append(f"设置保存失败：{save_error}")
         self._sync_tray_state()
 
+    def _on_hotkey_capture_toggled(self, capturing: bool) -> None:
+        if capturing:
+            self.hotkeys.suspend()
+        else:
+            self.hotkeys.resume()
+
     def show_settings(self) -> None:
-        if self.overlay is not None:
+        if self.overlay is not None or self._capture_pending:
+            return
+        if self.settings_dialog.isVisible():
+            # 已经打开时只前置,不重置输入框,保住未保存的编辑。
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
             return
         self.settings_dialog.show_with_settings(self.settings)
 
-    def apply_settings(self, new_settings: AppSettings) -> tuple[bool, str]:
+    def apply_settings(
+        self,
+        new_settings: AppSettings,
+        notice: str | None = None,
+    ) -> tuple[bool, str]:
         old_settings = self.settings
         try:
-            copy_hotkey = parse_hotkey(new_settings.copy_hotkey)
-            save_hotkey = parse_hotkey(new_settings.save_hotkey)
-            old_copy = parse_hotkey(old_settings.copy_hotkey)
-            old_save = parse_hotkey(old_settings.save_hotkey)
+            new_mapping = self._parse_hotkey_mapping(new_settings)
+            old_mapping = self._parse_hotkey_mapping(old_settings)
         except ValueError as exc:
             return False, str(exc)
 
-        registered, message = self.hotkeys.apply(copy_hotkey, save_hotkey)
+        registered, message = self.hotkeys.apply(new_mapping)
         if not registered:
             return False, message
 
         try:
             set_start_with_windows(new_settings.start_with_windows)
         except OSError as exc:
-            self.hotkeys.apply(old_copy, old_save)
+            self.hotkeys.apply(old_mapping)
             return False, f"开机启动设置失败：{exc}"
 
         try:
             self.store.save(new_settings)
         except OSError as exc:
-            self.hotkeys.apply(old_copy, old_save)
+            self.hotkeys.apply(old_mapping)
             try:
                 set_start_with_windows(old_settings.start_with_windows)
             except OSError:
@@ -182,23 +258,25 @@ class AppController:
 
         self.settings = new_settings
         self._sync_tray_state()
-        self.notify("设置已保存", "新的快捷键和保存位置已经生效。")
+        self.notify("设置已保存", notice or "新的快捷键和保存位置已经生效。")
         return True, ""
 
-    def request_capture(self, action: str) -> None:
-        if action not in {"copy", "save"}:
+    def request_capture(self, action: str, fullscreen: bool = False) -> None:
+        if action not in {"copy", "save", "pin"}:
             return
         if self.overlay is not None or self._capture_pending:
             return
         self._capture_pending = True
+        self._settings_was_visible = self.settings_dialog.isVisible()
         self.settings_dialog.hide()
-        QTimer.singleShot(160, lambda: self._begin_capture(action))
+        QTimer.singleShot(160, lambda: self._begin_capture(action, fullscreen))
 
-    def _begin_capture(self, action: str) -> None:
-        self._capture_pending = False
-        if self.overlay is not None:
-            return
+    def _begin_capture(self, action: str, fullscreen: bool = False) -> None:
+        # processEvents 期间热键事件可能重入 request_capture;保持
+        # _capture_pending=True 直到遮罩就位,堵住这个重入窗口。
         try:
+            if self.overlay is not None:
+                return
             self.app.processEvents()
             desktop = capture_virtual_desktop()
             overlay = CaptureOverlay(desktop, action)
@@ -206,32 +284,118 @@ class AppController:
             overlay.completed.connect(self._capture_completed)
             overlay.cancelled.connect(self._capture_cancelled)
             overlay.start()
+            if fullscreen:
+                overlay.select_all()
         except Exception as exc:
             self.overlay = None
+            self._restore_settings_dialog()
             self.notify("截图失败", str(exc), warning=True)
+        finally:
+            self._capture_pending = False
 
-    def _capture_completed(self, image, action: str) -> None:  # type: ignore[no-untyped-def]
+    def _restore_settings_dialog(self) -> None:
+        """截图临时隐藏了设置窗口的话,把它连同未保存的编辑一起还回来。"""
+        if not self._settings_was_visible:
+            return
+        self._settings_was_visible = False
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
+    def _capture_completed(self, image, action: str, global_pos) -> None:  # type: ignore[no-untyped-def]
         self.overlay = None
+        self._last_image = image
+        self._restore_settings_dialog()
         if action == "copy":
             try:
                 self.app.clipboard().setImage(image)
-                self.notify("截图成功", "已复制到剪贴板，可以直接粘贴到聊天软件。")
+                self.notify(
+                    "截图成功",
+                    "已复制到剪贴板，可以直接粘贴到聊天软件。"
+                    "需要留档可在托盘菜单点“保存最近一张截图”。",
+                )
             except Exception as exc:
                 self.notify("复制失败", str(exc), warning=True)
             return
+        if action == "pin":
+            self._create_pin_window(image, global_pos)
+            return
+        self._save_image(image)
 
+    def _save_image(self, image: QImage) -> None:
         try:
             target = save_png_atomic(image, Path(self.settings.save_directory))
-            self.notify("截图已保存", str(target))
+            self.notify(
+                "截图已保存",
+                f"{target}\n点击本通知打开所在文件夹。",
+                saved_path=target,
+            )
         except Exception as exc:
-            self.notify("保存失败", f"无法写入截图文件：{exc}", warning=True)
+            # 保存失败时把图塞进剪贴板兜底,截图内容不至于直接丢失。
+            try:
+                self.app.clipboard().setImage(image)
+                fallback = "截图已复制到剪贴板，请尽快粘贴保存。"
+            except Exception:
+                fallback = ""
+            self.notify(
+                "保存失败",
+                f"无法写入截图文件：{exc}\n{fallback}".rstrip(),
+                warning=True,
+            )
+
+    def _create_pin_window(self, image: QImage, global_pos) -> None:
+        logical = image.deviceIndependentSize()
+        pin = PinWindow(
+            image,
+            QSize(max(1, round(logical.width())), max(1, round(logical.height()))),
+            global_pos if isinstance(global_pos, QPoint) else QPoint(0, 0),
+        )
+        pin.closed.connect(self._pin_closed)
+        pin.save_requested.connect(self._save_image)
+        pin.close_all_requested.connect(self.close_all_pins)
+        self.pin_windows.append(pin)
+        pin.show()
+        pin.raise_()
+
+    def _pin_closed(self, pin: object) -> None:
+        self.pin_windows = [
+            window for window in self.pin_windows if window is not pin
+        ]
+
+    def close_all_pins(self) -> None:
+        for pin in list(self.pin_windows):
+            pin.close()
+        self.pin_windows.clear()
+
+    def open_save_directory(self) -> None:
+        directory = Path(self.settings.save_directory).expanduser()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(directory))  # type: ignore[attr-defined]
+        except OSError as exc:
+            self.notify("无法打开文件夹", str(exc), warning=True)
+
+    def _notification_clicked(self) -> None:
+        target = self._last_saved_path
+        if target is None or not target.exists():
+            return
+        try:
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        except OSError:
+            pass
 
     def _capture_cancelled(self) -> None:
         self.overlay = None
+        self._restore_settings_dialog()
 
     def _toggle_startup(self, checked: bool) -> None:
         candidate = self.settings.updated(start_with_windows=checked)
-        success, message = self.apply_settings(candidate)
+        notice = (
+            "已开启开机启动，登录 Windows 后会自动运行。"
+            if checked
+            else "已关闭开机启动。"
+        )
+        success, message = self.apply_settings(candidate, notice=notice)
         if not success:
             self._sync_tray_state()
             self.notify("开机启动设置失败", message, warning=True)
@@ -240,23 +404,52 @@ class AppController:
         blocker = QSignalBlocker(self.startup_action)
         self.startup_action.setChecked(self.settings.start_with_windows)
         del blocker
+        self.tray.setToolTip(
+            f"{APP_TITLE}\n"
+            f"{self.settings.copy_hotkey} 复制 · "
+            f"{self.settings.save_hotkey} 保存 · "
+            f"{self.settings.pin_hotkey} 钉住\n"
+            "单击截图,双击打开设置"
+        )
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._tray_click_timer.start()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._tray_click_timer.stop()
             self.show_settings()
+        else:
+            # 右键菜单/中键会先收到 Trigger 之外的事件;取消待发的单击
+            # 截图,避免截到打开着的托盘菜单。
+            self._tray_click_timer.stop()
+
+    def _hotkey_summary(self) -> str:
+        return (
+            f"{self.settings.copy_hotkey} 复制；"
+            f"{self.settings.save_hotkey} 保存；"
+            f"{self.settings.pin_hotkey} 钉住。"
+        )
 
     def _show_startup_notice(self) -> None:
-        hotkey_text = (
-            f"{self.settings.copy_hotkey} 截图并复制；"
-            f"{self.settings.save_hotkey} 截图并保存。"
-        )
+        hotkey_text = self._hotkey_summary()
         if self._startup_warnings:
             details = "\n".join(self._startup_warnings)
             self.notify("截图工具已启动，但有设置需要处理", f"{hotkey_text}\n{details}", True)
-        else:
+        elif "--autostart" not in self.app.arguments():
+            # 开机自启的实例不打扰用户;有警告时仍然要弹出来。
             self.notify("截图工具已启动", hotkey_text)
 
-    def notify(self, title: str, message: str, warning: bool = False) -> None:
+    def notify(
+        self,
+        title: str,
+        message: str,
+        warning: bool = False,
+        saved_path: Path | None = None,
+    ) -> None:
+        # 普通通知不清掉保存路径:通知中心里那条"点击打开所在文件夹"
+        # 可能还没被点,清了它就变成无声空操作。
+        if saved_path is not None:
+            self._last_saved_path = saved_path
         icon = (
             QSystemTrayIcon.MessageIcon.Warning
             if warning
@@ -265,15 +458,13 @@ class AppController:
         self.tray.showMessage(title, message, icon, 4500)
 
     def handle_second_instance(self) -> None:
-        self.notify(
-            "截图工具正在运行",
-            f"{self.settings.copy_hotkey} 截图并复制；{self.settings.save_hotkey} 截图并保存。",
-        )
+        self.notify("截图工具正在运行", self._hotkey_summary())
 
     def quit(self) -> None:
         if self.overlay is not None:
             self.overlay.cancel()
             self.overlay = None
+        self.close_all_pins()
         self.settings_dialog.close()
         self.app.quit()
 

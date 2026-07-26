@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+import math
+
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QContextMenuEvent,
+    QGuiApplication,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPaintEvent,
+    QPainter,
+    QPen,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import QMenu, QWidget
+
+
+MIN_ZOOM = 0.2
+MAX_ZOOM = 5.0
+ZOOM_STEP = 1.1
+MIN_OPACITY = 0.2
+SNAP_DISTANCE = 12
+HUD_DURATION_MS = 900
+
+
+class PinWindow(QWidget):
+    """置顶无边框贴图:把截图钉在屏幕上随时参考。
+
+    拖动移动(靠近屏幕边缘自动吸附),滚轮以光标为锚点缩放,
+    Ctrl+滚轮调透明度,方向键微调位置(Shift 加速),
+    +/- 缩放,双击或 Ctrl+0 恢复原始大小,
+    Ctrl+C 复制,Ctrl+S 保存,Esc 或右键菜单关闭。
+    """
+
+    closed = Signal(object)
+    save_requested = Signal(QImage)
+    close_all_requested = Signal()
+
+    def __init__(
+        self,
+        image: QImage,
+        logical_size: QSize,
+        global_pos: QPoint,
+    ) -> None:
+        super().__init__(None)
+        self._image = image
+        self._base_size = QSize(
+            max(1, logical_size.width()),
+            max(1, logical_size.height()),
+        )
+        self._zoom = 1.0
+        self._drag_offset: QPoint | None = None
+        self._hud_text: str | None = None
+        self._hud_timer = QTimer(self)
+        self._hud_timer.setSingleShot(True)
+        self._hud_timer.setInterval(HUD_DURATION_MS)
+        self._hud_timer.timeout.connect(self._clear_hud)
+        # 连续滚轮缩放期间用快速插值保持跟手,停下后再平滑重绘一次。
+        self._smooth_timer = QTimer(self)
+        self._smooth_timer.setSingleShot(True)
+        self._smooth_timer.setInterval(150)
+        self._smooth_timer.timeout.connect(self.update)
+
+        self.setWindowTitle("贴图")
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.resize(self._base_size)
+        self.move(global_pos)
+
+    @property
+    def image(self) -> QImage:
+        return self._image
+
+    @property
+    def zoom(self) -> float:
+        return self._zoom
+
+    def set_zoom(self, zoom: float, anchor: QPointF | None = None) -> None:
+        """调整缩放;anchor 为窗口内锚点,缩放后保持其屏幕位置不变。"""
+        clamped = min(MAX_ZOOM, max(MIN_ZOOM, zoom))
+        # 滚轮往返的连乘会留下 1e-16 级漂移;吸附回精确 1.0,
+        # 否则 paintEvent 的 1:1 清晰分支永久失效,高分屏文字发虚。
+        if math.isclose(clamped, 1.0, rel_tol=1e-9):
+            clamped = 1.0
+        if clamped == self._zoom:
+            return
+        old_width = max(1, self.width())
+        old_height = max(1, self.height())
+        new_size = QSize(
+            max(1, round(self._base_size.width() * clamped)),
+            max(1, round(self._base_size.height() * clamped)),
+        )
+        self._zoom = clamped
+        position = self.pos()
+        if anchor is not None:
+            ratio_x = anchor.x() / old_width
+            ratio_y = anchor.y() / old_height
+            position = position - QPoint(
+                round(ratio_x * (new_size.width() - old_width)),
+                round(ratio_y * (new_size.height() - old_height)),
+            )
+        self._smooth_timer.start()
+        self.setGeometry(QRect(position, new_size))
+        self.update()
+
+    def reset_view(self) -> None:
+        self.set_zoom(1.0)
+        self.setWindowOpacity(1.0)
+        self._show_hud("100%")
+
+    def copy_to_clipboard(self) -> None:
+        QGuiApplication.clipboard().setImage(self._image)
+        self._show_hud("已复制")
+
+    def _show_hud(self, text: str) -> None:
+        self._hud_text = text
+        self._hud_timer.start()
+        self.update()
+
+    def _clear_hud(self) -> None:
+        self._hud_text = None
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(
+            QPainter.RenderHint.SmoothPixmapTransform,
+            not self._smooth_timer.isActive(),
+        )
+        if (
+            self._zoom == 1.0
+            and abs(self._image.devicePixelRatio() - self.devicePixelRatioF())
+            < 0.001
+        ):
+            # 100% 且 DPR 匹配时按设备像素 1:1 绘制,高分屏文字不发虚。
+            painter.drawImage(QPointF(0.0, 0.0), self._image)
+        else:
+            painter.drawImage(QRectF(self.rect()), self._image)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#1677ff"), 1.0))
+        painter.drawRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
+        if self._hud_text:
+            self._draw_hud(painter, self._hud_text)
+        painter.end()
+
+    def _draw_hud(self, painter: QPainter, text: str) -> None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        metrics = painter.fontMetrics()
+        width = metrics.horizontalAdvance(text) + 20
+        height = metrics.height() + 10
+        rect = QRectF(
+            (self.width() - width) / 2,
+            max(4.0, (self.height() - height) / 2),
+            width,
+            height,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(20, 23, 28, 205))
+        painter.drawRoundedRect(rect, 5, 5)
+        painter.setPen(QColor("white"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _snapped_position(self, pos: QPoint) -> QPoint:
+        screen = QGuiApplication.screenAt(pos + QPoint(self.width() // 2, 0))
+        if screen is None:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return pos
+        area: QRect = screen.availableGeometry()
+        x, y = pos.x(), pos.y()
+        if abs(x - area.left()) <= SNAP_DISTANCE:
+            x = area.left()
+        elif abs(x + self.width() - area.right() - 1) <= SNAP_DISTANCE:
+            x = area.right() - self.width() + 1
+        if abs(y - area.top()) <= SNAP_DISTANCE:
+            y = area.top()
+        elif abs(y + self.height() - area.bottom() - 1) <= SNAP_DISTANCE:
+            y = area.bottom() - self.height() + 1
+        return QPoint(x, y)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_offset is not None and (
+            event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            target = event.globalPosition().toPoint() - self._drag_offset
+            self.move(self._snapped_position(target))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset_view()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        steps = event.angleDelta().y() / 120.0
+        if steps == 0:
+            return
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            opacity = self.windowOpacity() + 0.1 * steps
+            opacity = min(1.0, max(MIN_OPACITY, opacity))
+            self.setWindowOpacity(opacity)
+            self._show_hud(f"不透明度 {round(opacity * 100)}%")
+        else:
+            self.set_zoom(self._zoom * (ZOOM_STEP**steps), event.position())
+            self._show_hud(f"{round(self._zoom * 100)}%")
+        event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
+            self.close()
+            return
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if key == Qt.Key.Key_C:
+                self.copy_to_clipboard()
+                return
+            if key == Qt.Key.Key_S:
+                self.save_requested.emit(self._image)
+                return
+            if key == Qt.Key.Key_0:
+                self.reset_view()
+                return
+        if key in {Qt.Key.Key_Plus, Qt.Key.Key_Equal}:
+            self.set_zoom(self._zoom * ZOOM_STEP)
+            self._show_hud(f"{round(self._zoom * 100)}%")
+            return
+        if key in {Qt.Key.Key_Minus, Qt.Key.Key_Underscore}:
+            self.set_zoom(self._zoom / ZOOM_STEP)
+            self._show_hud(f"{round(self._zoom * 100)}%")
+            return
+        offset_by_key = {
+            Qt.Key.Key_Left: QPoint(-1, 0),
+            Qt.Key.Key_Right: QPoint(1, 0),
+            Qt.Key.Key_Up: QPoint(0, -1),
+            Qt.Key.Key_Down: QPoint(0, 1),
+        }
+        offset = offset_by_key.get(key)
+        if offset is not None:
+            factor = (
+                10 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            )
+            self.move(self.pos() + offset * factor)
+            return
+        super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        menu = QMenu(self)
+        status = menu.addAction(
+            f"缩放 {round(self._zoom * 100)}% · "
+            f"不透明度 {round(self.windowOpacity() * 100)}%"
+        )
+        status.setEnabled(False)
+        menu.addSeparator()
+        copy_action = menu.addAction("复制图片\tCtrl+C")
+        save_action = menu.addAction("保存图片\tCtrl+S")
+        reset_action = menu.addAction("恢复原始大小\t双击 / Ctrl+0")
+        menu.addSeparator()
+        close_action = menu.addAction("关闭贴图\tEsc")
+        close_all_action = menu.addAction("关闭所有贴图")
+        chosen = menu.exec(event.globalPos())
+        if chosen == copy_action:
+            self.copy_to_clipboard()
+        elif chosen == save_action:
+            self.save_requested.emit(self._image)
+        elif chosen == reset_action:
+            self.reset_view()
+        elif chosen == close_action:
+            self.close()
+        elif chosen == close_all_action:
+            self.close_all_requested.emit()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.closed.emit(self)
+        event.accept()

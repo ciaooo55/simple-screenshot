@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent
+
+from simple_screenshot.pin_window import PinWindow
+
+
+def make_image(width: int = 100, height: int = 60, ratio: float = 1.0) -> QImage:
+    image = QImage(width, height, QImage.Format.Format_ARGB32)
+    image.fill(QColor("#34c759"))
+    image.setDevicePixelRatio(ratio)
+    return image
+
+
+def test_pin_window_uses_logical_size_and_position(qapplication):
+    pin = PinWindow(make_image(200, 120, 2.0), QSize(100, 60), QPoint(30, 40))
+
+    assert pin.size() == QSize(100, 60)
+    assert pin.pos() == QPoint(30, 40)
+    pin.close()
+
+
+def test_zoom_resizes_window_and_clamps(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+
+    pin.set_zoom(2.0)
+    assert pin.size() == QSize(200, 120)
+
+    pin.set_zoom(100.0)
+    assert pin.zoom == 5.0
+
+    pin.set_zoom(0.01)
+    assert pin.zoom == 0.2
+
+    pin.reset_view()
+    assert pin.size() == QSize(100, 60)
+    pin.close()
+
+
+def test_escape_closes_and_emits_closed(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    closed: list[object] = []
+    pin.closed.connect(lambda window: closed.append(window))
+
+    pin.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.NoModifier)
+    )
+    qapplication.processEvents()
+
+    assert closed == [pin]
+
+
+def test_ctrl_c_copies_image_to_clipboard(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+
+    pin.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_C,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+
+    clipboard_image = QGuiApplication.clipboard().image()
+    assert not clipboard_image.isNull()
+    assert clipboard_image.size() == QSize(100, 60)
+    pin.close()
+
+
+def test_zoom_keeps_anchor_point_fixed(qapplication):
+    from PySide6.QtCore import QPointF
+
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(100, 100))
+
+    pin.set_zoom(2.0, QPointF(50, 30))
+
+    assert pin.size() == QSize(200, 120)
+    assert pin.pos() == QPoint(50, 70)
+    pin.close()
+
+
+def test_arrow_keys_nudge_pin_position(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(100, 100))
+
+    pin.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.NoModifier)
+    )
+    pin.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_Down,
+            Qt.KeyboardModifier.ShiftModifier,
+        )
+    )
+
+    assert pin.pos() == QPoint(101, 110)
+    pin.close()
+
+
+def test_plus_minus_keys_zoom(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+
+    pin.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Plus, Qt.NoModifier)
+    )
+    assert pin.zoom > 1.0
+
+    pin.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Minus, Qt.NoModifier)
+    )
+    assert abs(pin.zoom - 1.0) < 1e-6
+    pin.close()
+
+
+def test_snapped_position_sticks_to_screen_edges(qapplication):
+    from PySide6.QtGui import QGuiApplication
+
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(200, 200))
+    area = QGuiApplication.primaryScreen().availableGeometry()
+
+    near_corner = QPoint(area.left() + 8, area.top() + 5)
+    snapped = pin._snapped_position(near_corner)
+
+    assert snapped == QPoint(area.left(), area.top())
+
+    middle = QPoint(area.center().x(), area.center().y())
+    assert pin._snapped_position(middle) == middle
+    pin.close()
+
+
+def test_ctrl_s_requests_save(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    saved: list[QImage] = []
+    pin.save_requested.connect(lambda image: saved.append(image))
+
+    pin.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_S,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+
+    assert len(saved) == 1
+    assert saved[0].size() == QSize(100, 60)
+    pin.close()
