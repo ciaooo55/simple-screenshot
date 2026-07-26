@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from simple_screenshot.config import AppSettings, SettingsStore
+from simple_screenshot.config import AppSettings, SettingsStore, default_settings
 
 
 def test_missing_config_uses_project_tp(tmp_path):
@@ -138,4 +138,53 @@ def test_duplicate_pin_hotkey_is_treated_as_invalid_config(tmp_path):
     settings = store.load()
 
     assert settings.pin_hotkey == "Alt+Q"
+    assert store.last_warning is not None
+
+
+def test_hide_pins_on_capture_roundtrip_and_default(tmp_path):
+    store = SettingsStore(config_dir=tmp_path / "cfg", base_dir=tmp_path)
+
+    # 磁盘上真实存在的旧版配置缺这个键:走 _decode 迁移路径,默认打开。
+    store.config_dir.mkdir(parents=True)
+    store.path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "copy_hotkey": "Alt+A",
+                "save_hotkey": "Alt+S",
+                "pin_hotkey": "Alt+Q",
+                "save_directory": str(tmp_path / "tp"),
+                "start_with_windows": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = store.load()
+    assert loaded.hide_pins_on_capture is True
+    assert store.last_warning is None
+
+    store.save(default_settings(tmp_path).updated(hide_pins_on_capture=False))
+    assert store.load().hide_pins_on_capture is False
+
+
+def test_hide_pins_wrong_type_falls_back_to_defaults(tmp_path):
+    store = SettingsStore(config_dir=tmp_path / "cfg", base_dir=tmp_path)
+    store.config_dir.mkdir(parents=True)
+    store.path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "copy_hotkey": "Alt+A",
+                "save_hotkey": "Alt+S",
+                "pin_hotkey": "Alt+Q",
+                "save_directory": str(tmp_path / "tp"),
+                "start_with_windows": False,
+                "hide_pins_on_capture": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = store.load()
+    assert loaded.hide_pins_on_capture is True
     assert store.last_warning is not None

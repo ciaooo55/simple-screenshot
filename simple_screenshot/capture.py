@@ -3,7 +3,17 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -18,6 +28,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -191,6 +202,11 @@ class CaptureOverlay(QWidget):
         self._active_shape: Annotation | None = None
         self._pointer_pos: QPointF | None = None
         self._copied_color_notice: str | None = None
+        self._style_notice: str | None = None
+        self._pen_last_point: QPointF | None = None
+        self._pen_moved = False
+        self._help_visible = False
+        self._suppress_next_dblclick = False
         self._text_editor: InlineTextEdit | None = None
         self._text_position = QPointF()
         self._selection_before_reselect: QRectF | None = None
@@ -301,6 +317,10 @@ class CaptureOverlay(QWidget):
         for size in (16, 24, 32, 48):
             self.font_combo.addItem(f"{size}px", size)
         self.font_combo.setCurrentIndex(1)
+        # QComboBox 自带的滚轮是"向上选上一项"(数值变小),与画布滚轮
+        # 方向相反;接管成统一的"向上加大",并走同一套浮签提示。
+        self.width_combo.installEventFilter(self)
+        self.font_combo.installEventFilter(self)
 
         layout.addWidget(self.color_combo)
         layout.addWidget(self.width_combo)
@@ -486,7 +506,87 @@ class CaptureOverlay(QWidget):
             and self._selection_transform != "move"
         ):
             self._draw_magnifier(painter)
+        if self.state == "editing" and self._style_notice:
+            self._draw_style_notice(painter)
+        if self._help_visible:
+            self._draw_help_panel(painter)
         painter.end()
+
+    def _draw_style_notice(self, painter: QPainter) -> None:
+        """滚轮调样式时在光标旁短暂显示当前数值。"""
+        anchor = self._pointer_pos or self.selection.center()
+        metrics = painter.fontMetrics()
+        text = self._style_notice or ""
+        width = metrics.horizontalAdvance(text) + 16
+        height = metrics.height() + 8
+        x = min(max(4.0, anchor.x() + 16), self.width() - width - 4.0)
+        y = min(max(4.0, anchor.y() + 16), self.height() - height - 4.0)
+        rect = QRectF(x, y, width, height)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(20, 23, 28, 215))
+        painter.drawRoundedRect(rect, 4, 4)
+        painter.setPen(QColor("white"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    _HELP_ROWS = (
+        ("单击窗口 / 拖动", "吸附选择 / 自由框选(Shift 正方形)"),
+        ("Ctrl+A / R", "全屏 / 恢复上次选区"),
+        ("方向键 / Ctrl+方向键", "移动选区 / 调整大小(加 Shift ×10)"),
+        ("V P A R O", "选择 · 画笔 · 箭头 · 矩形 · 椭圆"),
+        ("N M T", "序号 · 马赛克 · 文字(数字 1-8 同效)"),
+        ("滚轮", "调画笔粗细 / 文字字号"),
+        ("Shift 拖动", "正方形 / 正圆 / 45° 箭头"),
+        ("Ctrl+Z / Ctrl+Y", "撤销 / 重做"),
+        ("双击 / Enter", "完成默认动作"),
+        ("Ctrl+C / S / D", "复制 / 保存 / 钉住"),
+        ("C", "框选时复制光标处颜色值"),
+        ("右键 / Esc", "逐级返回 / 取消"),
+    )
+
+    def _draw_help_panel(self, painter: QPainter) -> None:
+        metrics = painter.fontMetrics()
+        key_w = max(
+            metrics.horizontalAdvance(key) for key, _ in self._HELP_ROWS
+        )
+        desc_w = max(
+            metrics.horizontalAdvance(desc) for _, desc in self._HELP_ROWS
+        )
+        row_h = metrics.height() + 8
+        pad = 18
+        gap = 24
+        title_h = row_h + 10
+        width = pad * 2 + key_w + gap + desc_w
+        height = pad * 2 + title_h + row_h * len(self._HELP_ROWS)
+        rect = QRectF(
+            (self.width() - width) / 2.0,
+            max(8.0, (self.height() - height) / 2.0),
+            width,
+            height,
+        )
+        painter.setPen(QPen(QColor("#58a6ff"), 1.0))
+        painter.setBrush(QColor(16, 19, 24, 242))
+        painter.drawRoundedRect(rect, 8, 8)
+        painter.setPen(QColor("#8ec5ff"))
+        painter.drawText(
+            QRectF(rect.left(), rect.top() + pad, rect.width(), row_h),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            "快捷键一览(F1 或点击关闭)",
+        )
+        y = rect.top() + pad + title_h
+        for key, desc in self._HELP_ROWS:
+            painter.setPen(QColor("#f0b64c"))
+            painter.drawText(
+                QRectF(rect.left() + pad, y, key_w, row_h),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                key,
+            )
+            painter.setPen(QColor("white"))
+            painter.drawText(
+                QRectF(rect.left() + pad + key_w + gap, y, desc_w, row_h),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                desc,
+            )
+            y += row_h
 
     def _physical_rect_size(self, rect: QRectF) -> tuple[int, int]:
         """与 render_selection 相同的取整方式,保证标签数字 = 导出 PNG 像素。"""
@@ -670,6 +770,15 @@ class CaptureOverlay(QWidget):
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        if self._help_visible:
+            self._help_visible = False
+            # 关面板的这次点击不该触达底层;它若是双击的前半段,
+            # 后半段(dblclick 事件)也要一并吞掉,否则会直接完成截图。
+            self._suppress_next_dblclick = True
+            self.update()
+            event.accept()
+            return
+        self._suppress_next_dblclick = False
         point = event.position()
         if self._is_on_toolbar(point):
             # 工具栏的内边距/分隔条/提示文字不吃鼠标事件,
@@ -718,6 +827,8 @@ class CaptureOverlay(QWidget):
             self._active_shape = None
             return
         self.active_path = QPainterPath(point)
+        self._pen_last_point = QPointF(point)
+        self._pen_moved = False
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -749,7 +860,15 @@ class CaptureOverlay(QWidget):
             self.update()
             return
         if self.active_path is not None:
-            self.active_path.lineTo(point)
+            # 二次贝塞尔过中点平滑:控制点取上一实际点,笔迹不再有折角。
+            last = self._pen_last_point or QPointF(point)
+            mid = QPointF(
+                (last.x() + point.x()) / 2.0,
+                (last.y() + point.y()) / 2.0,
+            )
+            self.active_path.quadTo(last, mid)
+            self._pen_last_point = QPointF(point)
+            self._pen_moved = True
             self.update()
             return
         if self.state == "editing":
@@ -783,7 +902,7 @@ class CaptureOverlay(QWidget):
                     self.selection = QRectF(self._pressed_window.rect)
                     self._pressed_window = None
                     if was_reselecting:
-                        self._reset_annotations()
+                        self._archive_annotations_for_reselect()
                         self._discard_reselection_backup()
                     self._accept_selection()
                     return
@@ -801,7 +920,7 @@ class CaptureOverlay(QWidget):
                 self.update()
                 return
             if was_reselecting:
-                self._reset_annotations()
+                self._archive_annotations_for_reselect()
                 self._discard_reselection_backup()
             self._pressed_window = None
             self._accept_selection()
@@ -819,6 +938,9 @@ class CaptureOverlay(QWidget):
             self.update()
             return
         if self.active_path is not None:
+            if self._pen_moved:
+                # 平滑段终点停在中点,补一段到真实抬笔位置。
+                self.active_path.lineTo(self._clamp_point(event.position()))
             if self.active_path.elementCount() > 1:
                 self._push_history()
                 self.annotations.append(
@@ -829,10 +951,16 @@ class CaptureOverlay(QWidget):
                     )
                 )
             self.active_path = None
+            self._pen_last_point = None
+            self._pen_moved = False
             self._sync_annotation_actions()
             self.update()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if self._suppress_next_dblclick:
+            self._suppress_next_dblclick = False
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             if self._is_on_toolbar(event.position()):
                 event.accept()
@@ -856,8 +984,12 @@ class CaptureOverlay(QWidget):
         ).contains(point)
 
     def _handle_right_press(self) -> None:
-        """右键分级回退:文字框 → 当前拖拽 → 编辑态回框选 → 退出截图。"""
+        """右键分级回退:帮助 → 文字框 → 当前拖拽 → 编辑态回框选 → 退出。"""
         if self._resolved:
+            return
+        if self._help_visible:
+            self._help_visible = False
+            self.update()
             return
         if self._text_editor is not None:
             self._discard_inline_text()
@@ -888,6 +1020,8 @@ class CaptureOverlay(QWidget):
             self._shape_origin = None
             self._active_shape = None
             self.active_path = None
+            self._pen_last_point = None
+            self._pen_moved = False
             self.update()
             return
         if self._selection_transform is not None:
@@ -918,6 +1052,8 @@ class CaptureOverlay(QWidget):
         self._shape_origin = None
         self._active_shape = None
         self.active_path = None
+        self._pen_last_point = None
+        self._pen_moved = False
         self._selection_transform = None
         self._discard_reselection_backup()
         self._reset_annotations()
@@ -931,6 +1067,20 @@ class CaptureOverlay(QWidget):
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (
+            event.key() in {Qt.Key.Key_F1, Qt.Key.Key_H}
+            and not event.modifiers()
+            and self._text_editor is None
+        ):
+            self._help_visible = not self._help_visible
+            self.update()
+            return
+        if self._help_visible:
+            # 帮助面板打开时,任意按键只负责收起面板,不再继续执行:
+            # 否则 Enter/Ctrl+C 这类"关闭手势"会直接把截图完成掉。
+            self._help_visible = False
+            self.update()
+            return
         if event.key() == Qt.Key.Key_Escape:
             self.cancel()
             return
@@ -944,6 +1094,13 @@ class CaptureOverlay(QWidget):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             if event.key() == Qt.Key.Key_A:
                 self.select_all()
+                return
+            if (
+                event.key() in {Qt.Key.Key_Z, Qt.Key.Key_Y}
+                and self.state == "reselecting"
+            ):
+                # 重选拖拽期间撤销/重做会与右键还原备份打架,
+                # 造成撤销链断裂,这里直接吞掉。
                 return
             if event.key() == Qt.Key.Key_Z:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -1030,6 +1187,64 @@ class CaptureOverlay(QWidget):
         if not self._resolved:
             self.update()
 
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[no-untyped-def]
+        if (
+            obj in (self.width_combo, self.font_combo)
+            and event.type() == QEvent.Type.Wheel
+        ):
+            delta = event.angleDelta().y()
+            if delta:
+                direction = 1 if delta > 0 else -1
+                combo = obj
+                index = max(
+                    0, min(combo.count() - 1, combo.currentIndex() + direction)
+                )
+                if index != combo.currentIndex():
+                    combo.setCurrentIndex(index)
+                label = "字号" if combo is self.font_combo else "粗细"
+                unit = "" if combo is self.font_combo else "px"
+                self._style_notice = f"{label} {combo.currentData()}{unit}"
+                QTimer.singleShot(900, self._clear_style_notice)
+                self.update()
+            return True
+        return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if self.state != "editing" or self._text_editor is not None:
+            event.ignore()
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
+        if self._step_tool_style(1 if delta > 0 else -1):
+            event.accept()
+        else:
+            event.ignore()
+
+    def _step_tool_style(self, direction: int) -> bool:
+        """滚轮微调当前工具的样式:画笔/箭头/形状调粗细,文字调字号。"""
+        tool = self._current_tool()
+        if tool == "text":
+            combo, label, unit = self.font_combo, "字号", ""
+        elif tool in {"pen", "arrow", "rect", "ellipse"}:
+            combo, label, unit = self.width_combo, "粗细", "px"
+        else:
+            return False
+        index = combo.currentIndex() + direction
+        index = max(0, min(combo.count() - 1, index))
+        if index != combo.currentIndex():
+            combo.setCurrentIndex(index)
+        self._style_notice = f"{label} {combo.currentData()}{unit}"
+        QTimer.singleShot(900, self._clear_style_notice)
+        self.update()
+        return True
+
+    def _clear_style_notice(self) -> None:
+        self._style_notice = None
+        if not self._resolved:
+            self.update()
+
     def _push_history(self) -> None:
         self._history.append(list(self.annotations))
         self._redo_stack.clear()
@@ -1048,6 +1263,12 @@ class CaptureOverlay(QWidget):
         self.annotations.clear()
         self._history.clear()
         self._redo_stack.clear()
+
+    def _archive_annotations_for_reselect(self) -> None:
+        """重选生效时旧标注压进撤销栈而不是销毁:误点选区外 Ctrl+Z 可找回。"""
+        if self.annotations:
+            self._push_history()
+            self.annotations = []
 
     def undo(self) -> None:
         self._commit_inline_text()

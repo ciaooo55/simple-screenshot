@@ -7,7 +7,17 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSignalBlocker, QSize, QTimer, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -78,6 +88,7 @@ class AppController:
         self.hotkeys.activated.connect(self.request_capture)
         self.overlay: CaptureOverlay | None = None
         self.pin_windows: list[PinWindow] = []
+        self._pins_hidden_for_capture: list[PinWindow] = []
         self._capture_pending = False
         self._closed = False
         self._last_saved_path: Path | None = None
@@ -119,6 +130,7 @@ class AppController:
         save_action = QAction("截图并保存", menu)
         pin_action = QAction("截图并钉住", menu)
         fullscreen_action = QAction("全屏截图", menu)
+        self.pin_clipboard_action = QAction("贴图剪贴板图片", menu)
         self.save_last_action = QAction("保存最近一张截图", menu)
         self.close_pins_action = QAction("关闭所有贴图", menu)
         folder_action = QAction("打开截图文件夹", menu)
@@ -133,6 +145,7 @@ class AppController:
         fullscreen_action.triggered.connect(
             lambda: self.request_capture("copy", fullscreen=True)
         )
+        self.pin_clipboard_action.triggered.connect(self.pin_clipboard_image)
         self.save_last_action.triggered.connect(self._save_last_image)
         self.close_pins_action.triggered.connect(self.close_all_pins)
         folder_action.triggered.connect(self.open_save_directory)
@@ -145,6 +158,7 @@ class AppController:
         menu.addAction(pin_action)
         menu.addAction(fullscreen_action)
         menu.addSeparator()
+        menu.addAction(self.pin_clipboard_action)
         menu.addAction(self.save_last_action)
         menu.addAction(self.close_pins_action)
         menu.addAction(folder_action)
@@ -162,6 +176,18 @@ class AppController:
     def _save_last_image(self) -> None:
         if self._last_image is not None:
             self._save_image(self._last_image)
+
+    def pin_clipboard_image(self) -> None:
+        """把剪贴板里的图片(任意来源)钉成置顶贴图。"""
+        image = self.app.clipboard().image()
+        if image.isNull():
+            self.notify(
+                "剪贴板里没有图片",
+                "先复制一张图片(网页右键复制、微信图片等),再用本功能贴到屏幕上。",
+                warning=True,
+            )
+            return
+        self._create_pin_window(QImage(image), QCursor.pos(), fit_to_screen=True)
 
     def _parse_hotkey_mapping(self, settings: AppSettings) -> dict[str, Hotkey]:
         return {
@@ -269,6 +295,13 @@ class AppController:
         self._capture_pending = True
         self._settings_was_visible = self.settings_dialog.isVisible()
         self.settings_dialog.hide()
+        if self.settings.hide_pins_on_capture:
+            # 旧贴图不该被截进新图里;截图结束(含取消/失败)后恢复。
+            self._pins_hidden_for_capture = [
+                pin for pin in self.pin_windows if pin.isVisible()
+            ]
+            for pin in self._pins_hidden_for_capture:
+                pin.hide()
         QTimer.singleShot(160, lambda: self._begin_capture(action, fullscreen))
 
     def _begin_capture(self, action: str, fullscreen: bool = False) -> None:
@@ -295,12 +328,21 @@ class AppController:
 
     def _restore_settings_dialog(self) -> None:
         """截图临时隐藏了设置窗口的话,把它连同未保存的编辑一起还回来。"""
+        self._restore_hidden_pins()
         if not self._settings_was_visible:
             return
         self._settings_was_visible = False
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    def _restore_hidden_pins(self) -> None:
+        hidden = self._pins_hidden_for_capture
+        self._pins_hidden_for_capture = []
+        for pin in hidden:
+            # 隐藏期间可能被"关闭所有贴图"关掉了,只恢复仍存活的。
+            if pin in self.pin_windows:
+                pin.show()
 
     def _capture_completed(self, image, action: str, global_pos) -> None:  # type: ignore[no-untyped-def]
         self.overlay = None
@@ -322,7 +364,7 @@ class AppController:
             return
         self._save_image(image)
 
-    def _save_image(self, image: QImage) -> None:
+    def _save_image(self, image: QImage) -> bool:
         try:
             target = save_png_atomic(image, Path(self.settings.save_directory))
             self.notify(
@@ -330,6 +372,7 @@ class AppController:
                 f"{target}\n点击本通知打开所在文件夹。",
                 saved_path=target,
             )
+            return True
         except Exception as exc:
             # 保存失败时把图塞进剪贴板兜底,截图内容不至于直接丢失。
             try:
@@ -342,20 +385,55 @@ class AppController:
                 f"无法写入截图文件：{exc}\n{fallback}".rstrip(),
                 warning=True,
             )
+            return False
 
-    def _create_pin_window(self, image: QImage, global_pos) -> None:
+    def _create_pin_window(
+        self, image: QImage, global_pos, fit_to_screen: bool = False
+    ) -> None:
         logical = image.deviceIndependentSize()
+        position = global_pos if isinstance(global_pos, QPoint) else QPoint(0, 0)
         pin = PinWindow(
             image,
             QSize(max(1, round(logical.width())), max(1, round(logical.height()))),
-            global_pos if isinstance(global_pos, QPoint) else QPoint(0, 0),
+            position,
         )
         pin.closed.connect(self._pin_closed)
-        pin.save_requested.connect(self._save_image)
+        pin.save_requested.connect(
+            lambda saved, pin=pin: self._save_pin_image(pin, saved)
+        )
         pin.close_all_requested.connect(self.close_all_pins)
         self.pin_windows.append(pin)
         pin.show()
         pin.raise_()
+        # 仅剪贴板来源做适配:截图钉住必须原位 1:1 覆盖,不能缩放。
+        if not fit_to_screen:
+            return
+        screen = QGuiApplication.screenAt(position) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        fit = min(
+            1.0,
+            available.width() * 0.9 / max(1.0, logical.width()),
+            available.height() * 0.9 / max(1.0, logical.height()),
+        )
+        if fit < 1.0:
+            pin.fit_to(fit)
+        # 从托盘菜单触发时光标在屏幕角落,窗口会滑出屏;整体钳回可视区。
+        geometry = pin.geometry()
+        x = max(
+            available.left(),
+            min(geometry.x(), available.right() - geometry.width() + 1),
+        )
+        y = max(
+            available.top(),
+            min(geometry.y(), available.bottom() - geometry.height() + 1),
+        )
+        pin.move(x, y)
+
+    def _save_pin_image(self, pin: PinWindow, image: QImage) -> None:
+        # 贴图窗口内保存也要有即时反馈,与 Ctrl+C 的"已复制"一致。
+        pin.show_save_result(self._save_image(image))
 
     def _pin_closed(self, pin: object) -> None:
         self.pin_windows = [

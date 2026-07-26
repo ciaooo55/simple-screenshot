@@ -36,6 +36,7 @@ class AppSettings:
     pin_hotkey: str
     save_directory: str
     start_with_windows: bool
+    hide_pins_on_capture: bool = True
 
     def updated(self, **changes: Any) -> "AppSettings":
         return replace(self, **changes)
@@ -50,6 +51,7 @@ def default_settings(base_dir: Path | None = None) -> AppSettings:
         pin_hotkey="Alt+Q",
         save_directory=str(root / "tp"),
         start_with_windows=False,
+        hide_pins_on_capture=True,
     )
 
 
@@ -110,6 +112,9 @@ class SettingsStore:
         start_with_windows = raw.get(
             "start_with_windows", defaults.start_with_windows
         )
+        hide_pins_on_capture = raw.get(
+            "hide_pins_on_capture", defaults.hide_pins_on_capture
+        )
 
         if not isinstance(copy_hotkey, str) or not copy_hotkey.strip():
             raise ValueError("复制快捷键无效")
@@ -123,6 +128,8 @@ class SettingsStore:
             raise ValueError("保存目录无效")
         if not isinstance(start_with_windows, bool):
             raise ValueError("开机启动设置无效")
+        if not isinstance(hide_pins_on_capture, bool):
+            raise ValueError("截图时隐藏贴图设置无效")
 
         # Keep validation close to persistence so malformed manual edits are
         # diagnosed and safely replaced by defaults on the next launch.
@@ -153,6 +160,7 @@ class SettingsStore:
             pin_hotkey=pin_parsed.display,
             save_directory=save_directory.strip(),
             start_with_windows=start_with_windows,
+            hide_pins_on_capture=hide_pins_on_capture,
         )
 
     def _record_error(self, message: str) -> None:

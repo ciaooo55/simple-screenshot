@@ -786,3 +786,173 @@ def test_color_at_pointer_reads_desktop_pixel(qapplication):
 
     assert color is not None
     assert color.name() == "#ffffff"
+
+
+def test_pen_stroke_is_smoothed_with_curves(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("pen")
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(40, 40)))  # type: ignore[arg-type]
+    for x in (70, 110, 150):
+        overlay.mouseMoveEvent(MouseEventStub(QPointF(x, 60)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(170, 70)))  # type: ignore[arg-type]
+
+    assert len(overlay.annotations) == 1
+    path = overlay.annotations[0].path
+    types = {path.elementAt(i).type for i in range(path.elementCount())}
+    assert QPainterPath.ElementType.CurveToElement in types
+    overlay.cancel()
+
+
+def test_pen_click_without_drag_leaves_no_annotation(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("pen")
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+
+    assert overlay.annotations == []
+    overlay.cancel()
+
+
+def test_wheel_steps_pen_width_with_notice(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("pen")
+    overlay.width_combo.setCurrentIndex(0)
+
+    assert overlay._step_tool_style(1) is True
+    assert overlay.width_combo.currentIndex() == 1
+    assert "粗细" in overlay._style_notice
+
+    overlay._step_tool_style(-1)
+    assert overlay.width_combo.currentIndex() == 0
+    overlay.cancel()
+
+
+def test_wheel_steps_font_size_for_text_tool(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("text")
+    overlay.font_combo.setCurrentIndex(0)
+
+    assert overlay._step_tool_style(1) is True
+    assert overlay.font_combo.currentIndex() == 1
+    assert "字号" in overlay._style_notice
+    overlay.cancel()
+
+
+def test_wheel_is_ignored_for_number_tool(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(0, 0, 300, 180)
+    overlay.state = "editing"
+    overlay.set_tool("number")
+
+    assert overlay._step_tool_style(1) is False
+    overlay.cancel()
+
+
+def test_help_panel_toggles_and_esc_only_closes_it(qapplication):
+    overlay = make_overlay()
+
+    press_key(overlay, Qt.Key.Key_F1)
+    assert overlay._help_visible
+
+    press_key(overlay, Qt.Key.Key_Escape)
+    assert not overlay._help_visible
+    assert not overlay._resolved
+
+    press_key(overlay, Qt.Key.Key_H)
+    assert overlay._help_visible
+    press_key(overlay, Qt.Key.Key_F1)
+    assert not overlay._help_visible
+    overlay.cancel()
+
+
+def test_reselect_keeps_annotations_recoverable_via_undo(qapplication):
+    overlay = make_overlay()
+    drag(overlay, QPointF(20, 20), QPointF(160, 120))
+    assert overlay.state == "editing"
+    assert overlay._current_tool() == "pen"
+
+    drag(overlay, QPointF(40, 40), QPointF(90, 80))
+    assert len(overlay.annotations) == 1
+
+    # 误点/拖到选区外触发重选:标注被清空,但 Ctrl+Z 能找回。
+    drag(overlay, QPointF(200, 30), QPointF(280, 150))
+    assert overlay.state == "editing"
+    assert overlay.annotations == []
+
+    overlay.undo()
+    assert len(overlay.annotations) == 1
+    overlay.cancel()
+
+
+def test_click_closing_help_swallows_following_double_click(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(10, 10, 200, 100)
+    overlay.state = "editing"
+    overlay.set_tool("select")
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    press_key(overlay, Qt.Key.Key_F1)
+    assert overlay._help_visible
+
+    # 双击关面板:第一击收面板,第二击(dblclick 事件)必须被吞掉。
+    overlay.mousePressEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+
+    assert not overlay._help_visible
+    assert completed == []
+    assert not overlay._resolved
+
+    # 面板关闭后的真实双击仍然照常完成。
+    overlay.mousePressEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(50, 50)))  # type: ignore[arg-type]
+    qapplication.processEvents()
+    assert completed == ["copy"]
+
+
+def test_enter_while_help_open_only_closes_help(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(10, 10, 200, 100)
+    overlay.state = "editing"
+    completed: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+
+    press_key(overlay, Qt.Key.Key_F1)
+    press_key(overlay, Qt.Key.Key_Return)
+    qapplication.processEvents()
+
+    assert not overlay._help_visible
+    assert completed == []
+    assert not overlay._resolved
+    overlay.cancel()
+
+
+def test_undo_redo_blocked_while_reselecting(qapplication):
+    overlay = make_overlay()
+    drag(overlay, QPointF(20, 20), QPointF(160, 120))
+    drag(overlay, QPointF(40, 40), QPointF(90, 80))
+    assert len(overlay.annotations) == 1
+
+    # 进入重选拖拽(按下但未松手),Ctrl+Z 应被吞掉。
+    overlay.mousePressEvent(MouseEventStub(QPointF(200, 30)))  # type: ignore[arg-type]
+    assert overlay.state == "reselecting"
+    press_key(
+        overlay, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier
+    )
+    assert len(overlay.annotations) == 1
+    assert overlay._history != []
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(200, 30)))  # type: ignore[arg-type]
+    overlay.cancel()

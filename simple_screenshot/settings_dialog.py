@@ -165,20 +165,28 @@ class SettingsDialog(QDialog):
 
         self.startup_checkbox = QCheckBox("登录 Windows 后自动启动", self)
         form.addRow("开机启动：", self.startup_checkbox)
+        self.hide_pins_checkbox = QCheckBox(
+            "截图时暂时隐藏已有贴图（避免旧贴图被截进新图）", self
+        )
+        form.addRow("贴图：", self.hide_pins_checkbox)
         root.addLayout(form)
 
         note = QLabel(
-            "截图时：单击吸附窗口，拖动自由框选（Shift 正方形），Ctrl+A 全屏，"
-            "R 恢复上次选区；方向键微调选区位置，Ctrl+方向键调整大小，加 Shift 步长 10px；"
-            "选区确定后默认画笔可直接涂画，V 切回选择工具拖动选区；"
-            "画笔/箭头/矩形/椭圆/序号/马赛克/文字标注，Shift 约束正圆与 45° 箭头，"
-            "Ctrl+Z 撤销、Ctrl+Y 重做；移动鼠标可放大取色，按 C 复制颜色值；"
-            "双击或 Enter 完成默认动作，Ctrl+C 复制、Ctrl+S 保存、Ctrl+D 钉住，"
-            "右键逐级返回，Esc 取消。"
-            "贴图窗口：拖动移动（贴近屏幕边缘自动吸附），滚轮以光标为中心缩放，"
-            "Ctrl+滚轮调透明度，+/- 缩放，方向键微调位置，双击或 Ctrl+0 还原，Esc 关闭。",
+            "<b>框选</b>：单击吸附窗口，拖动自由框选（Shift 正方形）；"
+            "Ctrl+A 全屏，R 恢复上次选区；放大镜取色，C 复制颜色值。<br>"
+            "<b>调整</b>：方向键移动选区，Ctrl+方向键调整大小（加 Shift 步长 10px），"
+            "拖动边角手柄微调。<br>"
+            "<b>标注</b>：选区确定后默认画笔直接涂画，V 切回选择工具可拖动选区；"
+            "滚轮调画笔粗细 / 文字字号，Shift 约束正圆与 45° 箭头；"
+            "Ctrl+Z 撤销、Ctrl+Y 重做；F1 查看全部快捷键。<br>"
+            "<b>完成</b>：双击或 Enter 执行默认动作；Ctrl+C 复制、Ctrl+S 保存、"
+            "Ctrl+D 钉住；右键逐级返回，Esc 取消。<br>"
+            "<b>贴图</b>：拖动移动（贴边自动吸附），滚轮以光标为中心缩放，"
+            "Ctrl+滚轮调透明度，方向键微调，双击或 Ctrl+0 还原，Esc 关闭；"
+            "托盘菜单可直接贴剪贴板里的图片。",
             self,
         )
+        note.setTextFormat(Qt.TextFormat.RichText)
         note.setStyleSheet("color: #666;")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -219,6 +227,7 @@ class SettingsDialog(QDialog):
         self.pin_hotkey_edit.set_hotkey(settings.pin_hotkey)
         self.directory_edit.setText(settings.save_directory)
         self.startup_checkbox.setChecked(settings.start_with_windows)
+        self.hide_pins_checkbox.setChecked(settings.hide_pins_on_capture)
 
     def show_with_settings(self, settings: AppSettings) -> None:
         self.load_settings(settings)
@@ -233,6 +242,7 @@ class SettingsDialog(QDialog):
         self.pin_hotkey_edit.set_hotkey(defaults.pin_hotkey)
         self.directory_edit.setText(defaults.save_directory)
         self.startup_checkbox.setChecked(defaults.start_with_windows)
+        self.hide_pins_checkbox.setChecked(defaults.hide_pins_on_capture)
 
     def _browse_directory(self) -> None:
         current = self.directory_edit.text().strip()
@@ -281,6 +291,7 @@ class SettingsDialog(QDialog):
             pin_hotkey=pin_hotkey.display,
             save_directory=str(directory),
             start_with_windows=self.startup_checkbox.isChecked(),
+            hide_pins_on_capture=self.hide_pins_checkbox.isChecked(),
         )
         success, message = self.save_callback(settings)
         if not success:

@@ -30,8 +30,9 @@ def test_zoom_resizes_window_and_clamps(qapplication):
     pin.set_zoom(100.0)
     assert pin.zoom == 5.0
 
+    # 100×60 的小贴图受最小尺寸保护:短边不低于 48px,即缩放下限 0.8。
     pin.set_zoom(0.01)
-    assert pin.zoom == 0.2
+    assert pin.zoom == 0.8
 
     pin.reset_view()
     assert pin.size() == QSize(100, 60)
@@ -144,4 +145,36 @@ def test_ctrl_s_requests_save(qapplication):
 
     assert len(saved) == 1
     assert saved[0].size() == QSize(100, 60)
+    pin.close()
+
+
+def test_large_pin_can_still_reach_global_min_zoom(qapplication):
+    pin = PinWindow(make_image(600, 400), QSize(600, 400), QPoint(0, 0))
+
+    pin.set_zoom(0.01)
+    assert pin.zoom == 0.2
+    pin.close()
+
+
+def test_show_save_result_shows_hud_feedback(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+
+    pin.show_save_result(True)
+    assert pin._hud_text == "已保存"
+
+    pin.show_save_result(False)
+    assert "保存失败" in pin._hud_text
+    pin.close()
+
+
+def test_fit_to_allows_below_normal_min_and_stays_reachable(qapplication):
+    # 800×8000 的长图:fit≈0.116,低于常规下限也要生效,且还原后还能回去。
+    pin = PinWindow(make_image(800, 800), QSize(800, 8000), QPoint(0, 0))
+
+    pin.fit_to(0.116)
+    assert abs(pin.zoom - 0.116) < 1e-9
+
+    pin.set_zoom(1.0)
+    pin.set_zoom(0.01)
+    assert abs(pin.zoom - 0.116) < 1e-9
     pin.close()

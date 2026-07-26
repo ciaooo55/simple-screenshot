@@ -21,6 +21,8 @@ from PySide6.QtWidgets import QMenu, QWidget
 
 MIN_ZOOM = 0.2
 MAX_ZOOM = 5.0
+# 缩小时窗口短边不低于此值,否则小贴图会缩到无法命中、无法还原。
+MIN_PIN_SIDE = 48.0
 ZOOM_STEP = 1.1
 MIN_OPACITY = 0.2
 SNAP_DISTANCE = 12
@@ -52,6 +54,12 @@ class PinWindow(QWidget):
             max(1, logical_size.width()),
             max(1, logical_size.height()),
         )
+        base_short = float(
+            min(self._base_size.width(), self._base_size.height())
+        )
+        # 缩放下限:普通贴图短边不低于 MIN_PIN_SIDE,防止缩到点不中;
+        # fit_to 可以为超大图临时放宽这个下限。
+        self._min_zoom = min(1.0, max(MIN_ZOOM, MIN_PIN_SIDE / base_short))
         self._zoom = 1.0
         self._drag_offset: QPoint | None = None
         self._hud_text: str | None = None
@@ -87,7 +95,7 @@ class PinWindow(QWidget):
 
     def set_zoom(self, zoom: float, anchor: QPointF | None = None) -> None:
         """调整缩放;anchor 为窗口内锚点,缩放后保持其屏幕位置不变。"""
-        clamped = min(MAX_ZOOM, max(MIN_ZOOM, zoom))
+        clamped = min(MAX_ZOOM, max(self._min_zoom, zoom))
         # 滚轮往返的连乘会留下 1e-16 级漂移;吸附回精确 1.0,
         # 否则 paintEvent 的 1:1 清晰分支永久失效,高分屏文字发虚。
         if math.isclose(clamped, 1.0, rel_tol=1e-9):
@@ -113,6 +121,16 @@ class PinWindow(QWidget):
         self.setGeometry(QRect(position, new_size))
         self.update()
 
+    def fit_to(self, zoom: float) -> None:
+        """初始适配屏幕的缩放:必要时放宽下限,滚轮/还原后仍能回到该值。"""
+        base_short = float(
+            min(self._base_size.width(), self._base_size.height())
+        )
+        self._min_zoom = min(
+            self._min_zoom, max(zoom, 1.0 / max(1.0, base_short))
+        )
+        self.set_zoom(zoom)
+
     def reset_view(self) -> None:
         self.set_zoom(1.0)
         self.setWindowOpacity(1.0)
@@ -121,6 +139,9 @@ class PinWindow(QWidget):
     def copy_to_clipboard(self) -> None:
         QGuiApplication.clipboard().setImage(self._image)
         self._show_hud("已复制")
+
+    def show_save_result(self, success: bool) -> None:
+        self._show_hud("已保存" if success else "保存失败,详见通知")
 
     def _show_hud(self, text: str) -> None:
         self._hud_text = text
