@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ocr
-from .capture import CaptureOverlay, capture_virtual_desktop
+from .capture import CapturedDesktop, CaptureOverlay, capture_virtual_desktop
 from .config import AppSettings, SettingsStore, default_settings
 from .hotkeys import Hotkey, HotkeyManager, parse_hotkey
 from .output import (

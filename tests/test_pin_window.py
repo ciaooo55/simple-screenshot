@@ -128,6 +128,27 @@ def test_preview_hides_quick_pen_while_ocr_is_active(qapplication):
     preview.close()
 
 
+def test_quick_pen_opens_annotation_editor_without_closing_app(qapplication):
+    from simple_screenshot.app import AppController
+
+    preview = CapturePreviewWindow(
+        make_image(), QSize(100, 60), QPoint(40, 30), "copy"
+    )
+    controller = object.__new__(AppController)
+    controller.overlay = None
+    controller.pin_windows = [preview]
+    preview.closed.connect(controller._pin_closed)
+
+    AppController._edit_capture_preview(controller, preview)
+
+    assert controller.overlay is not None
+    assert controller.overlay.state == "editing"
+    assert controller.overlay._current_tool() == "pen"
+    assert preview not in controller.pin_windows
+    controller.overlay._resolved = True
+    controller.overlay.close()
+
+
 def test_ctrl_c_copies_image_to_clipboard(qapplication):
     pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
 
