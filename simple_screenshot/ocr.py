@@ -33,9 +33,56 @@ _RAPID_MAX_SIDE = 8192
 
 
 @dataclass(slots=True)
+class OcrSpan:
+    text: str
+    line_index: int
+    order: int
+    left: float
+    top: float
+    right: float
+    bottom: float
+
+
+@dataclass(slots=True)
 class OcrOutcome:
     text: str
     line_count: int
+    spans: tuple[OcrSpan, ...] = ()
+
+
+def _box_bounds(box) -> tuple[float, float, float, float]:  # type: ignore[no-untyped-def]
+    xs = [float(point[0]) for point in box]
+    ys = [float(point[1]) for point in box]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _append_text_spans(
+    spans: list[OcrSpan],
+    text: str,
+    box,
+    line_index: int,
+    coordinate_scale: float,
+) -> None:  # type: ignore[no-untyped-def]
+    """Append character spans, evenly splitting a line/word box when needed."""
+    if not text:
+        return
+    left, top, right, bottom = _box_bounds(box)
+    width = max(1.0, right - left)
+    count = len(text)
+    for index, char in enumerate(text):
+        char_left = left + width * index / count
+        char_right = left + width * (index + 1) / count
+        spans.append(
+            OcrSpan(
+                char,
+                line_index,
+                len(spans),
+                char_left / coordinate_scale,
+                top / coordinate_scale,
+                char_right / coordinate_scale,
+                bottom / coordinate_scale,
+            )
+        )
 
 
 def _rapid_available() -> bool:
@@ -144,7 +191,10 @@ def _recognize_with_rapid(image: QImage) -> OcrOutcome | None:
     if engine is None:
         return None
     # 超过引擎上限的图先自己等比缩,内存可控且不触发内部粗暴降采样。
-    largest = max(image.width(), image.height())
+    original_width = image.width()
+    original_height = image.height()
+    largest = max(original_width, original_height)
+    coordinate_scale = 1.0
     if largest > _RAPID_MAX_SIDE:
         factor = _RAPID_MAX_SIDE / largest
         image = image.scaled(
@@ -153,11 +203,43 @@ def _recognize_with_rapid(image: QImage) -> OcrOutcome | None:
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-    result, _elapse = engine(image_bgr_array(image))
-    lines = [
-        str(item[1]).strip() for item in (result or []) if str(item[1]).strip()
-    ]
-    return OcrOutcome(text="\n".join(lines), line_count=len(lines))
+        coordinate_scale = min(
+            image.width() / original_width,
+            image.height() / original_height,
+        )
+    result, _elapse = engine(image_bgr_array(image), return_word_box=True)
+    lines: list[str] = []
+    spans: list[OcrSpan] = []
+    for item in result or []:
+        line_text = str(item[1]).strip()
+        if not line_text:
+            continue
+        line_index = len(lines)
+        lines.append(line_text)
+        char_boxes = item[3] if len(item) > 4 else None
+        char_texts = item[4] if len(item) > 4 else None
+        if char_boxes and char_texts and len(char_boxes) == len(char_texts):
+            for char_box, char_text in zip(char_boxes, char_texts):
+                _append_text_spans(
+                    spans,
+                    str(char_text),
+                    char_box,
+                    line_index,
+                    coordinate_scale,
+                )
+        else:
+            _append_text_spans(
+                spans,
+                line_text,
+                item[0],
+                line_index,
+                coordinate_scale,
+            )
+    return OcrOutcome(
+        text="\n".join(lines),
+        line_count=len(lines),
+        spans=tuple(spans),
+    )
 
 
 def _is_cjk(char: str) -> bool:
@@ -233,6 +315,14 @@ def recognize_image(image: QImage) -> OcrOutcome:
     return fallback
 
 
+def recognize_png_bytes(payload: bytes) -> OcrOutcome:
+    """Process-safe entry point used by the isolated OCR worker."""
+    image = QImage.fromData(payload, "PNG")
+    if image.isNull():
+        raise RuntimeError("无法读取待识别图片")
+    return recognize_image(image)
+
+
 def _recognize_with_windows(image: QImage) -> OcrOutcome:
     try:
         from winrt.windows.graphics.imaging import (
@@ -297,9 +387,47 @@ def _recognize_with_windows(image: QImage) -> OcrOutcome:
     except Exception as exc:  # WinRT 错误信息对用户不友好,包一层。
         raise RuntimeError(f"识别过程出错:{exc}") from exc
 
-    lines = [
-        join_ocr_words([word.text for word in line.words])
-        for line in result.lines
-    ]
-    lines = [line for line in lines if line.strip()]
-    return OcrOutcome(text="\n".join(lines), line_count=len(lines))
+    lines: list[str] = []
+    spans: list[OcrSpan] = []
+    for source_line in result.lines:
+        words = [word for word in source_line.words if word.text]
+        line_text = join_ocr_words([word.text for word in words])
+        if not line_text.strip():
+            continue
+        line_index = len(lines)
+        lines.append(line_text)
+        for word_index, word in enumerate(words):
+            if word_index:
+                previous = words[word_index - 1].text[-1]
+                if not (_is_cjk(previous) and _is_cjk(word.text[0])):
+                    previous_span = spans[-1]
+                    spans.append(
+                        OcrSpan(
+                            " ",
+                            line_index,
+                            len(spans),
+                            previous_span.right,
+                            previous_span.top,
+                            previous_span.right,
+                            previous_span.bottom,
+                        )
+                    )
+            rect = word.bounding_rect
+            box = (
+                (rect.x, rect.y),
+                (rect.x + rect.width, rect.y),
+                (rect.x + rect.width, rect.y + rect.height),
+                (rect.x, rect.y + rect.height),
+            )
+            _append_text_spans(
+                spans,
+                word.text,
+                box,
+                line_index,
+                factor,
+            )
+    return OcrOutcome(
+        text="\n".join(lines),
+        line_count=len(lines),
+        spans=tuple(spans),
+    )

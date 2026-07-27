@@ -65,7 +65,6 @@ a = Analysis(
         "pydoc",
         "doctest",
         "sqlite3",
-        "multiprocessing",
         "xmlrpc",
         "curses",
         "lib2to3",

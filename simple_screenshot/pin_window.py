@@ -21,6 +21,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
+from .ocr import OcrOutcome, OcrSpan
+
 from .output import export_drag_copy
 
 
@@ -73,6 +75,12 @@ class PinWindow(QWidget):
         self._click_through = False
         self._opacity_before_click_through = 1.0
         self._hud_text: str | None = None
+        self._ocr_loading = False
+        self._ocr_outcome: OcrOutcome | None = None
+        self._ocr_anchor: int | None = None
+        self._ocr_focus: int | None = None
+        self._ocr_hover: int | None = None
+        self._ocr_dragging = False
         self._hud_timer = QTimer(self)
         self._hud_timer.setSingleShot(True)
         self._hud_timer.setInterval(HUD_DURATION_MS)
@@ -153,9 +161,6 @@ class PinWindow(QWidget):
     def show_save_result(self, success: bool) -> None:
         self._show_hud("已保存" if success else "保存失败,详见通知")
 
-    def request_ocr(self) -> None:
-        self.ocr_requested.emit(self._image)
-
     @property
     def click_through(self) -> bool:
         return self._click_through
@@ -231,12 +236,142 @@ class PinWindow(QWidget):
             painter.drawImage(QPointF(0.0, 0.0), self._image)
         else:
             painter.drawImage(QRectF(self.rect()), self._image)
+        if self._ocr_loading or self._ocr_outcome is not None:
+            self._draw_ocr_layer(painter)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor("#1677ff"), 1.0))
         painter.drawRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
         if self._hud_text:
             self._draw_hud(painter, self._hud_text)
         painter.end()
+
+    def _ocr_span_rect(self, span: OcrSpan) -> QRectF:
+        return QRectF(
+            span.left * self.width() / self._image.width(),
+            span.top * self.height() / self._image.height(),
+            max(1.0, (span.right - span.left) * self.width() / self._image.width()),
+            max(1.0, (span.bottom - span.top) * self.height() / self._image.height()),
+        )
+
+    def _ocr_selected_range(self) -> tuple[int, int] | None:
+        if self._ocr_anchor is None or self._ocr_focus is None:
+            return None
+        return min(self._ocr_anchor, self._ocr_focus), max(
+            self._ocr_anchor, self._ocr_focus
+        )
+
+    def _draw_ocr_layer(self, painter: QPainter) -> None:
+        if self._ocr_loading:
+            self._draw_hud(painter, "正在识别文字…")
+            return
+        if self._ocr_outcome is None:
+            return
+        selected = self._ocr_selected_range()
+        for index, span in enumerate(self._ocr_outcome.spans):
+            rect = self._ocr_span_rect(span)
+            if selected and selected[0] <= index <= selected[1]:
+                painter.fillRect(rect.adjusted(-1, -1, 1, 1), QColor(22, 119, 255, 105))
+            elif index == self._ocr_hover:
+                painter.fillRect(rect.adjusted(-1, -1, 1, 1), QColor(88, 166, 255, 42))
+
+    def _ocr_index_at(self, point: QPointF) -> int | None:
+        if self._ocr_outcome is None:
+            return None
+        nearest: tuple[float, int] | None = None
+        for index, span in enumerate(self._ocr_outcome.spans):
+            rect = self._ocr_span_rect(span)
+            if rect.adjusted(-2, -2, 2, 2).contains(point):
+                return index
+            if rect.top() - 5 <= point.y() <= rect.bottom() + 5:
+                distance = abs(rect.center().x() - point.x())
+                if nearest is None or distance < nearest[0]:
+                    nearest = distance, index
+        return nearest[1] if nearest else None
+
+    def _ocr_text_for_range(self, start: int, end: int) -> str:
+        if self._ocr_outcome is None:
+            return ""
+        parts: list[str] = []
+        previous_line: int | None = None
+        for span in self._ocr_outcome.spans[start : end + 1]:
+            if previous_line is not None and span.line_index != previous_line:
+                parts.append("\n")
+            parts.append(span.text)
+            previous_line = span.line_index
+        return "".join(parts).strip()
+
+    def _ocr_word_range(self, index: int) -> tuple[int, int]:
+        if self._ocr_outcome is None:
+            return index, index
+        spans = self._ocr_outcome.spans
+        target = spans[index]
+        is_word = lambda value: bool(  # noqa: E731
+            value
+            and value.isascii()
+            and (value.isalnum() or value in "_-'")
+        )
+        if not is_word(target.text):
+            return index, index
+        start = end = index
+        while (
+            start > 0
+            and spans[start - 1].line_index == target.line_index
+            and is_word(spans[start - 1].text)
+        ):
+            start -= 1
+        while (
+            end + 1 < len(spans)
+            and spans[end + 1].line_index == target.line_index
+            and is_word(spans[end + 1].text)
+        ):
+            end += 1
+        return start, end
+
+    def _copy_ocr_selection(self) -> None:
+        selected = self._ocr_selected_range()
+        if selected is None:
+            return
+        text = self._ocr_text_for_range(*selected)
+        if text:
+            QGuiApplication.clipboard().setText(text)
+            self._show_hud(f"已复制 {len(text)} 个字符")
+
+    def request_ocr(self) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            return
+        self._ocr_loading = True
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        self.ocr_requested.emit(self._image)
+        self.update()
+
+    def set_ocr_result(self, outcome: OcrOutcome) -> None:
+        if not self._ocr_loading:
+            return
+        self._ocr_loading = False
+        if not outcome.text or not outcome.spans:
+            self._show_hud("未识别到可选择的文字")
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+        self._ocr_outcome = outcome
+        self.setCursor(Qt.CursorShape.IBeamCursor)
+        self.update()
+
+    def set_ocr_error(self, message: str) -> None:
+        if not self._ocr_loading:
+            return
+        self._ocr_loading = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._show_hud(message or "识别失败")
+
+    def _exit_ocr_mode(self) -> None:
+        self._ocr_loading = False
+        self._ocr_outcome = None
+        self._ocr_anchor = None
+        self._ocr_focus = None
+        self._ocr_hover = None
+        self._ocr_dragging = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.update()
 
     def _draw_hud(self, painter: QPainter, text: str) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -275,6 +410,17 @@ class PinWindow(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._ocr_loading:
+                event.accept()
+                return
+            if self._ocr_outcome is not None:
+                index = self._ocr_index_at(event.position())
+                self._ocr_anchor = index
+                self._ocr_focus = index
+                self._ocr_dragging = index is not None
+                self.update()
+                event.accept()
+                return
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 # 不立即启动拖出:等移动超过系统拖拽阈值再说,
                 # 否则 Ctrl+单击/Ctrl+双击都会误触发并落临时文件。
@@ -290,6 +436,16 @@ class PinWindow(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._ocr_loading:
+            return
+        if self._ocr_outcome is not None:
+            index = self._ocr_index_at(event.position())
+            if self._ocr_dragging and index is not None:
+                self._ocr_focus = index
+            else:
+                self._ocr_hover = index
+            self.update()
+            return
         if self._ctrl_drag_origin is not None and (
             event.buttons() & Qt.MouseButton.LeftButton
         ):
@@ -312,6 +468,15 @@ class PinWindow(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._ocr_outcome is not None:
+                if self._ocr_dragging:
+                    index = self._ocr_index_at(event.position())
+                    if index is not None:
+                        self._ocr_focus = index
+                self._ocr_dragging = False
+                self.update()
+                event.accept()
+                return
             self._ctrl_drag_origin = None
             self._drag_offset = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -321,6 +486,13 @@ class PinWindow(QWidget):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._ocr_outcome is not None:
+                index = self._ocr_index_at(event.position())
+                if index is not None:
+                    self._ocr_anchor, self._ocr_focus = self._ocr_word_range(index)
+                    self.update()
+                event.accept()
+                return
             self.reset_view()
             event.accept()
             return
@@ -342,6 +514,23 @@ class PinWindow(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
+        if self._ocr_loading:
+            if key == Qt.Key.Key_Escape:
+                self._exit_ocr_mode()
+            return
+        if self._ocr_outcome is not None:
+            if key == Qt.Key.Key_Escape:
+                self._exit_ocr_mode()
+            elif event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                if key == Qt.Key.Key_A and self._ocr_outcome.spans:
+                    self._ocr_anchor = 0
+                    self._ocr_focus = len(self._ocr_outcome.spans) - 1
+                    self.update()
+                elif key == Qt.Key.Key_C:
+                    self._copy_ocr_selection()
+            elif key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                self._copy_ocr_selection()
+            return
         if key == Qt.Key.Key_Escape:
             self.close()
             return
@@ -366,6 +555,9 @@ class PinWindow(QWidget):
             self.set_zoom(self._zoom / ZOOM_STEP)
             self._show_hud(f"{round(self._zoom * 100)}%")
             return
+        if key == Qt.Key.Key_W and not event.modifiers():
+            self.request_ocr()
+            return
         offset_by_key = {
             Qt.Key.Key_Left: QPoint(-1, 0),
             Qt.Key.Key_Right: QPoint(1, 0),
@@ -382,6 +574,10 @@ class PinWindow(QWidget):
         super().keyPressEvent(event)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            self._exit_ocr_mode()
+            event.accept()
+            return
         menu = QMenu(self)
         status = menu.addAction(
             f"缩放 {round(self._zoom * 100)}% · "

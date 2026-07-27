@@ -68,6 +68,9 @@ def test_recognize_rendered_text_end_to_end(qapplication):
     assert "Demo" in outcome.text
     assert "123" in outcome.text
     assert outcome.line_count >= 1
+    assert outcome.spans
+    assert all(span.right >= span.left for span in outcome.spans)
+    assert all(span.bottom >= span.top for span in outcome.spans)
 
 
 def test_false_availability_is_not_cached():
@@ -132,6 +135,22 @@ def test_rapid_failure_falls_back_to_windows(qapplication, monkeypatch):
 def test_rapid_availability_probe_is_lightweight():
     # 只探测包是否存在,不应触发引擎初始化。
     assert isinstance(ocr._rapid_available(), bool)
+
+
+def test_character_boxes_map_back_to_original_pixels():
+    spans: list[ocr.OcrSpan] = []
+    ocr._append_text_spans(
+        spans,
+        "AB",
+        ((20, 10), (60, 10), (60, 30), (20, 30)),
+        line_index=0,
+        coordinate_scale=2.0,
+    )
+
+    assert len(spans) == 2
+    assert (spans[0].left, spans[0].right) == (10.0, 20.0)
+    assert (spans[1].left, spans[1].right) == (20.0, 30.0)
+    assert spans[0].top == 5.0 and spans[0].bottom == 15.0
 
 
 @pytest.mark.skipif(

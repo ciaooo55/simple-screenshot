@@ -54,6 +54,7 @@ from .annotations import (
     render_selection,
     translated_annotations,
 )
+from .ocr import OcrOutcome, OcrSpan
 from .window_targets import WindowTarget, discover_window_targets
 
 
@@ -237,6 +238,12 @@ class CaptureOverlay(QWidget):
         self._transform_origin_selection = QRectF()
         self._transform_origin_annotations: list[Annotation] = []
         self._resolved = False
+        self._ocr_loading = False
+        self._ocr_outcome: OcrOutcome | None = None
+        self._ocr_anchor: int | None = None
+        self._ocr_focus: int | None = None
+        self._ocr_hover: int | None = None
+        self._ocr_dragging = False
 
         self.setWindowTitle("区域截图")
         self.setWindowFlags(
@@ -378,7 +385,7 @@ class CaptureOverlay(QWidget):
         from .ocr import is_available as ocr_available
 
         if ocr_available():
-            self.ocr_button.setToolTip("识别选区文字并弹出结果面板（W）")
+            self.ocr_button.setToolTip("识别文字并在原图上拖选复制（W）")
         else:
             self.ocr_button.setEnabled(False)
             self.ocr_button.setToolTip(
@@ -399,7 +406,7 @@ class CaptureOverlay(QWidget):
         self.redo_button.clicked.connect(self.redo)
         self.clear_button.clicked.connect(self.clear_annotations)
         cancel_button.clicked.connect(self.cancel)
-        self.ocr_button.clicked.connect(lambda: self.finish("ocr"))
+        self.ocr_button.clicked.connect(self.request_ocr)
         self.pin_button.clicked.connect(lambda: self.finish("pin"))
         self.copy_button.clicked.connect(lambda: self.finish("copy"))
         self.save_button.clicked.connect(lambda: self.finish("save"))
@@ -525,13 +532,25 @@ class CaptureOverlay(QWidget):
             painter.setClipRect(preview_rect)
             painter.drawPixmap(0, 0, self._backdrop_pixmap())
             if not self.selection.isEmpty():
+                annotations = self.annotations
+                active = self._active_annotation()
+                if self._ocr_loading or self._ocr_outcome is not None:
+                    # OCR 看原图而不是用户画上去的箭头/文字;马赛克必须保留。
+                    annotations = [
+                        command
+                        for command in self.annotations
+                        if isinstance(command, MosaicAnnotation)
+                    ]
+                    active = None
                 draw_annotations(
                     painter,
-                    self.annotations,
-                    self._active_annotation(),
+                    annotations,
+                    active,
                     source=self.desktop.image,
                     source_scale=self.desktop.render_scale,
                 )
+                if self._ocr_loading or self._ocr_outcome is not None:
+                    self._draw_ocr_layer(painter)
             painter.restore()
             border = QPen(QColor("#58a6ff"), 1.5, Qt.PenStyle.SolidLine)
             painter.setPen(border)
@@ -540,7 +559,12 @@ class CaptureOverlay(QWidget):
             self._draw_size_label(painter, preview_rect)
             if self.selection.isEmpty():
                 self._draw_window_title_label(painter, preview_rect)
-            if self.state == "editing" and not self.selection.isEmpty():
+            if (
+                self.state == "editing"
+                and not self.selection.isEmpty()
+                and not self._ocr_loading
+                and self._ocr_outcome is None
+            ):
                 self._draw_resize_handles(painter)
         if self.state in {"selecting", "reselecting"} or (
             self._selection_transform is not None
@@ -569,13 +593,170 @@ class CaptureOverlay(QWidget):
         painter.setPen(QColor("white"))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _ocr_span_rect(self, span: OcrSpan) -> QRectF:
+        scale = self.desktop.render_scale
+        return QRectF(
+            self.selection.left() + span.left / scale,
+            self.selection.top() + span.top / scale,
+            max(1.0, (span.right - span.left) / scale),
+            max(1.0, (span.bottom - span.top) / scale),
+        )
+
+    def _ocr_selected_range(self) -> tuple[int, int] | None:
+        if self._ocr_anchor is None or self._ocr_focus is None:
+            return None
+        return (
+            min(self._ocr_anchor, self._ocr_focus),
+            max(self._ocr_anchor, self._ocr_focus),
+        )
+
+    def _draw_ocr_layer(self, painter: QPainter) -> None:
+        if self._ocr_loading:
+            text = "正在识别文字…"
+            metrics = painter.fontMetrics()
+            rect = QRectF(
+                self.selection.center().x() - metrics.horizontalAdvance(text) / 2 - 14,
+                self.selection.center().y() - metrics.height(),
+                metrics.horizontalAdvance(text) + 28,
+                metrics.height() + 14,
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(20, 23, 28, 225))
+            painter.drawRoundedRect(rect, 5, 5)
+            painter.setPen(QColor("white"))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+            return
+        if self._ocr_outcome is None:
+            return
+
+        selected = self._ocr_selected_range()
+        for index, span in enumerate(self._ocr_outcome.spans):
+            rect = self._ocr_span_rect(span)
+            if selected and selected[0] <= index <= selected[1]:
+                painter.fillRect(rect.adjusted(-1, -1, 1, 1), QColor(22, 119, 255, 105))
+            elif index == self._ocr_hover:
+                painter.fillRect(rect.adjusted(-1, -1, 1, 1), QColor(88, 166, 255, 42))
+
+        # 字符高亮受选区裁剪;状态标识优先放在选区外,不能继承裁剪区。
+        painter.setClipping(False)
+        hint = f"文字选择 · {self._ocr_outcome.line_count} 行"
+        metrics = painter.fontMetrics()
+        hint_width = metrics.horizontalAdvance(hint) + 20
+        hint_height = metrics.height() + 10
+        below = self.selection.bottom() + 8
+        if below + hint_height <= self.height() - 4:
+            hint_y = below
+        elif self.selection.top() - hint_height - 8 >= 4:
+            hint_y = self.selection.top() - hint_height - 8
+        else:
+            hint_y = self.selection.bottom() - hint_height - 6
+        hint_rect = QRectF(
+            max(4.0, min(self.selection.left(), self.width() - hint_width - 4.0)),
+            hint_y,
+            hint_width,
+            hint_height,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(20, 23, 28, 218))
+        painter.drawRoundedRect(hint_rect, 4, 4)
+        painter.setPen(QColor("white"))
+        painter.drawText(hint_rect, Qt.AlignmentFlag.AlignCenter, hint)
+
+    def _ocr_index_at(self, point: QPointF) -> int | None:
+        if self._ocr_outcome is None:
+            return None
+        direct: int | None = None
+        nearest: tuple[float, int] | None = None
+        for index, span in enumerate(self._ocr_outcome.spans):
+            rect = self._ocr_span_rect(span)
+            if rect.adjusted(-2, -2, 2, 2).contains(point):
+                direct = index
+                break
+            if rect.top() - 5 <= point.y() <= rect.bottom() + 5:
+                distance = abs(rect.center().x() - point.x())
+                if nearest is None or distance < nearest[0]:
+                    nearest = (distance, index)
+        return direct if direct is not None else (nearest[1] if nearest else None)
+
+    def _ocr_text_for_range(self, start: int, end: int) -> str:
+        if self._ocr_outcome is None:
+            return ""
+        parts: list[str] = []
+        previous_line: int | None = None
+        for span in self._ocr_outcome.spans[start : end + 1]:
+            if previous_line is not None and span.line_index != previous_line:
+                parts.append("\n")
+            parts.append(span.text)
+            previous_line = span.line_index
+        return "".join(parts).strip()
+
+    @staticmethod
+    def _ocr_char_class(char: str) -> str:
+        if not char or char.isspace():
+            return "space"
+        if char.isascii() and (char.isalnum() or char in "_-'"):
+            return "latin"
+        if char.isalnum():
+            return "cjk"
+        return "punct"
+
+    def _ocr_word_range(self, index: int) -> tuple[int, int]:
+        if self._ocr_outcome is None:
+            return index, index
+        spans = self._ocr_outcome.spans
+        target = spans[index]
+        kind = self._ocr_char_class(target.text)
+        if kind != "latin":
+            return index, index
+        start = index
+        end = index
+        while (
+            start > 0
+            and spans[start - 1].line_index == target.line_index
+            and self._ocr_char_class(spans[start - 1].text) == kind
+        ):
+            start -= 1
+        while (
+            end + 1 < len(spans)
+            and spans[end + 1].line_index == target.line_index
+            and self._ocr_char_class(spans[end + 1].text) == kind
+        ):
+            end += 1
+        return start, end
+
+    def _copy_ocr_selection(self) -> None:
+        selected = self._ocr_selected_range()
+        if selected is None:
+            return
+        text = self._ocr_text_for_range(*selected)
+        if not text:
+            return
+        QGuiApplication.clipboard().setText(text)
+        self._style_notice = f"已复制 {len(text)} 个字符"
+        QTimer.singleShot(1200, self._clear_style_notice)
+        self.update()
+
+    def _exit_ocr_mode(self) -> None:
+        self._ocr_loading = False
+        self._ocr_outcome = None
+        self._ocr_anchor = None
+        self._ocr_focus = None
+        self._ocr_hover = None
+        self._ocr_dragging = False
+        self.toolbar.show()
+        self._position_toolbar()
+        self._sync_annotation_actions()
+        self._update_cursor()
+        self.update()
+
     _HELP_ROWS = (
         ("单击窗口 / 拖动", "吸附选择 / 自由框选(Shift 正方形)"),
         ("Ctrl+A / R", "全屏 / 恢复上次选区"),
         ("方向键 / Ctrl+方向键", "移动选区 / 调整大小(加 Shift ×10)"),
         ("V P G A R O", "选择 · 画笔 · 荧光 · 箭头 · 矩形 · 椭圆"),
         ("N M T", "序号 · 马赛克 · 文字(数字键同效)"),
-        ("W", "识别选区文字(OCR)"),
+        ("W", "识别文字并进入原图选择层"),
+        ("识别层 Ctrl+A / C / Esc", "全选 / 复制 / 返回编辑"),
         ("滚轮", "调画笔粗细 / 文字字号"),
         ("Shift 拖动", "正方形 / 正圆 / 45° 箭头"),
         ("Ctrl+Z / Ctrl+Y", "撤销 / 重做"),
@@ -813,6 +994,17 @@ class CaptureOverlay(QWidget):
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        if self._ocr_loading:
+            event.accept()
+            return
+        if self._ocr_outcome is not None:
+            index = self._ocr_index_at(event.position())
+            self._ocr_anchor = index
+            self._ocr_focus = index
+            self._ocr_dragging = index is not None
+            self.update()
+            event.accept()
+            return
         if self._help_visible:
             self._help_visible = False
             # 关面板的这次点击不该触达底层;它若是双击的前半段,
@@ -884,6 +1076,16 @@ class CaptureOverlay(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         point = self._clamp_point(event.position())
         self._pointer_pos = QPointF(point)
+        if self._ocr_loading:
+            return
+        if self._ocr_outcome is not None:
+            index = self._ocr_index_at(point)
+            if self._ocr_dragging and index is not None:
+                self._ocr_focus = index
+            else:
+                self._ocr_hover = index
+            self.update()
+            return
         if self._selection_transform is not None:
             self._update_selection_transform(point)
             return
@@ -938,6 +1140,17 @@ class CaptureOverlay(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._ocr_loading:
+            return
+        if self._ocr_outcome is not None:
+            if self._ocr_dragging:
+                index = self._ocr_index_at(event.position())
+                if index is not None:
+                    self._ocr_focus = index
+            self._ocr_dragging = False
+            self.update()
+            event.accept()
             return
         # 一次性消费双击完成候选:只有本次释放确实没画出内容才生效。
         dblclick_finish = self._dblclick_finish_candidate
@@ -1039,6 +1252,16 @@ class CaptureOverlay(QWidget):
             self.update()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if self._ocr_outcome is not None and event.button() == Qt.MouseButton.LeftButton:
+            index = self._ocr_index_at(event.position())
+            if index is not None:
+                start, end = self._ocr_word_range(index)
+                self._ocr_anchor = start
+                self._ocr_focus = end
+                self._ocr_dragging = False
+                self.update()
+            event.accept()
+            return
         if self._suppress_next_dblclick:
             self._suppress_next_dblclick = False
             event.accept()
@@ -1074,6 +1297,9 @@ class CaptureOverlay(QWidget):
     def _handle_right_press(self) -> None:
         """右键分级回退:帮助 → 文字框 → 当前拖拽 → 编辑态回框选 → 退出。"""
         if self._resolved:
+            return
+        if self._ocr_loading or self._ocr_outcome is not None:
+            self._exit_ocr_mode()
             return
         if self._help_visible:
             self._help_visible = False
@@ -1163,6 +1389,25 @@ class CaptureOverlay(QWidget):
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._ocr_loading:
+            if event.key() == Qt.Key.Key_Escape:
+                self._exit_ocr_mode()
+            event.accept()
+            return
+        if self._ocr_outcome is not None:
+            if event.key() == Qt.Key.Key_Escape:
+                self._exit_ocr_mode()
+            elif event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                if event.key() == Qt.Key.Key_A and self._ocr_outcome.spans:
+                    self._ocr_anchor = 0
+                    self._ocr_focus = len(self._ocr_outcome.spans) - 1
+                    self.update()
+                elif event.key() == Qt.Key.Key_C:
+                    self._copy_ocr_selection()
+            elif event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                self._copy_ocr_selection()
+            event.accept()
+            return
         if (
             event.key() in {Qt.Key.Key_F1, Qt.Key.Key_H}
             and not event.modifiers()
@@ -1411,28 +1656,67 @@ class CaptureOverlay(QWidget):
         self._sync_annotation_actions()
         self.update()
 
+    def request_ocr(self) -> None:
+        if (
+            self._resolved
+            or self.selection.isEmpty()
+            or self._ocr_loading
+            or self._ocr_outcome is not None
+            or not self.ocr_button.isEnabled()
+        ):
+            return
+        self._commit_inline_text()
+        ocr_image = render_selection(
+            self.desktop.image,
+            self.selection,
+            self.desktop.render_scale,
+            [
+                command
+                for command in self.annotations
+                if isinstance(command, MosaicAnnotation)
+            ],
+        )
+        if ocr_image.isNull():
+            return
+        ocr_image.setDevicePixelRatio(self.desktop.render_scale)
+        self._ocr_loading = True
+        self.toolbar.hide()
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        self.ocr_ready.emit(ocr_image)
+        self.update()
+
+    def set_ocr_result(self, outcome: OcrOutcome) -> None:
+        if self._resolved or not self._ocr_loading:
+            return
+        self._ocr_loading = False
+        if not outcome.text or not outcome.spans:
+            self._style_notice = "未识别到可选择的文字"
+            QTimer.singleShot(1600, self._clear_style_notice)
+            self._exit_ocr_mode()
+            return
+        self._ocr_outcome = outcome
+        self._ocr_anchor = None
+        self._ocr_focus = None
+        self.setCursor(Qt.CursorShape.IBeamCursor)
+        self.update()
+
+    def set_ocr_error(self, message: str) -> None:
+        if self._resolved or not self._ocr_loading:
+            return
+        self._style_notice = message or "识别失败"
+        QTimer.singleShot(2200, self._clear_style_notice)
+        self._exit_ocr_mode()
+
     def finish(self, action: str | None = None) -> None:
         if self._resolved or self.selection.isEmpty():
             return
         resolved_action = action or self.action
-        if resolved_action not in {"copy", "save", "pin", "save_as", "ocr"}:
+        if resolved_action == "ocr":
+            self.request_ocr()
+            return
+        if resolved_action not in {"copy", "save", "pin", "save_as"}:
             return
         self._commit_inline_text()
-        ocr_image: QImage | None = None
-        if resolved_action == "ocr":
-            # 识别用干净图:箭头/荧光/文字等覆盖物会干扰引擎。
-            # 马赛克必须保留——用户打码隐藏的内容绝不能泄漏进识别结果。
-            ocr_image = render_selection(
-                self.desktop.image,
-                self.selection,
-                self.desktop.render_scale,
-                [
-                    command
-                    for command in self.annotations
-                    if isinstance(command, MosaicAnnotation)
-                ],
-            )
-            ocr_image.setDevicePixelRatio(self.desktop.render_scale)
         image = render_selection(
             self.desktop.image,
             self.selection,
@@ -1451,8 +1735,6 @@ class CaptureOverlay(QWidget):
         self._resolved = True
         self.releaseKeyboard()
         self.hide()
-        if ocr_image is not None:
-            self.ocr_ready.emit(ocr_image)
         self.completed.emit(image, resolved_action, global_pos)
         self.close()
 

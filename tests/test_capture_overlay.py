@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QKeyEvent, QPainterPath
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent, QPainterPath
 
 from simple_screenshot.annotations import (
     ArrowAnnotation,
@@ -12,6 +12,7 @@ from simple_screenshot.annotations import (
     TextAnnotation,
 )
 from simple_screenshot.capture import CapturedDesktop, CaptureOverlay
+from simple_screenshot.ocr import OcrOutcome, OcrSpan
 from simple_screenshot.window_targets import WindowTarget
 
 
@@ -1042,29 +1043,33 @@ def test_toolbar_children_never_take_focus(qapplication):
     overlay.cancel()
 
 
-def test_w_key_finishes_with_ocr_action(qapplication):
+def test_w_key_enters_ocr_loading_without_finishing(qapplication):
     overlay = make_overlay()
     drag(overlay, QPointF(20, 20), QPointF(160, 120))
-    completed: list[str] = []
-    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+    requested: list[QImage] = []
+    overlay.ocr_ready.connect(lambda image: requested.append(image))
 
     press_key(overlay, Qt.Key.Key_W)
     qapplication.processEvents()
 
-    assert completed == ["ocr"]
+    assert len(requested) == 1
+    assert overlay._ocr_loading
+    assert not overlay._resolved
+    overlay.cancel()
 
 
-def test_toolbar_has_ocr_button_wired_to_finish(qapplication):
+def test_toolbar_ocr_button_keeps_overlay_open(qapplication):
     overlay = make_overlay()
     overlay.selection = QRectF(10, 10, 200, 100)
     overlay.state = "editing"
-    completed: list[str] = []
-    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+    requested: list[QImage] = []
+    overlay.ocr_ready.connect(lambda image: requested.append(image))
 
     overlay.ocr_button.click()
     qapplication.processEvents()
 
-    assert completed == ["ocr"] or not overlay.ocr_button.isEnabled()
+    assert len(requested) == 1 or not overlay.ocr_button.isEnabled()
+    assert not overlay._resolved
     overlay.cancel()
 
 
@@ -1234,16 +1239,12 @@ def test_ocr_finish_drops_overlays_but_keeps_mosaic(qapplication):
     overlay.annotations.append(PenAnnotation(path, "#ff0000", 8.0))
     overlay.annotations.append(MosaicAnnotation(QRectF(120, 30, 40, 30)))
     clean_images: list[object] = []
-    full_images: list[object] = []
     overlay.ocr_ready.connect(lambda image: clean_images.append(image))
-    overlay.completed.connect(
-        lambda image, action, pos: full_images.append((image, action))
-    )
 
     overlay.finish("ocr")
     qapplication.processEvents()
 
-    assert len(clean_images) == 1 and len(full_images) == 1
+    assert len(clean_images) == 1
     clean = clean_images[0]
     # 干净图:画笔被剔除(路径中点回到白底)……
     center = clean.pixelColor(90, 45)
@@ -1251,9 +1252,76 @@ def test_ocr_finish_drops_overlays_but_keeps_mosaic(qapplication):
     # ……但马赛克保留:条纹被块平均成中间灰,打码内容不泄漏。
     mosaic_pixel = clean.pixelColor(125, 33)
     assert 30 < mosaic_pixel.red() < 225
-    # completed 携带完整标注图:托盘"保存最近一张"不丢箭头/画笔。
-    full, action = full_images[0]
-    assert action == "ocr"
-    pen_pixel = full.pixelColor(90, 45)
-    assert pen_pixel.red() > 200 and pen_pixel.green() < 90
+    assert overlay._ocr_loading
+    assert not overlay._resolved
     assert len(overlay.annotations) == 2
+    overlay.cancel()
+
+
+def make_ocr_outcome() -> OcrOutcome:
+    text = "Hello world\n你好"
+    spans: list[OcrSpan] = []
+    x = 10.0
+    for char in "Hello world":
+        spans.append(OcrSpan(char, 0, len(spans), x, 10, x + 8, 28))
+        x += 8
+    x = 10.0
+    for char in "你好":
+        spans.append(OcrSpan(char, 1, len(spans), x, 36, x + 16, 56))
+        x += 16
+    return OcrOutcome(text, 2, tuple(spans))
+
+
+def test_ocr_layer_drag_selection_and_copy(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(20, 20, 200, 100)
+    overlay.state = "editing"
+    overlay._ocr_loading = True
+    overlay.set_ocr_result(make_ocr_outcome())
+
+    overlay.mousePressEvent(MouseEventStub(QPointF(34, 40)))  # type: ignore[arg-type]
+    overlay.mouseMoveEvent(MouseEventStub(QPointF(98, 40)))  # type: ignore[arg-type]
+    overlay.mouseReleaseEvent(MouseEventStub(QPointF(98, 40)))  # type: ignore[arg-type]
+    press_key(
+        overlay,
+        Qt.Key.Key_C,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+
+    assert QGuiApplication.clipboard().text() == "Hello wor"
+    assert not overlay._resolved
+    overlay.cancel()
+
+
+def test_ocr_layer_double_click_selects_latin_word(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(20, 20, 200, 100)
+    overlay.state = "editing"
+    overlay._ocr_loading = True
+    overlay.set_ocr_result(make_ocr_outcome())
+
+    overlay.mouseDoubleClickEvent(MouseEventStub(QPointF(54, 40)))  # type: ignore[arg-type]
+
+    selected = overlay._ocr_selected_range()
+    assert selected is not None
+    assert overlay._ocr_text_for_range(*selected) == "Hello"
+    overlay.cancel()
+
+
+def test_ocr_layer_ctrl_a_and_escape_returns_to_editor(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(20, 20, 200, 100)
+    overlay.state = "editing"
+    overlay._ocr_loading = True
+    overlay.set_ocr_result(make_ocr_outcome())
+
+    press_key(overlay, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    selected = overlay._ocr_selected_range()
+    assert selected is not None
+    assert overlay._ocr_text_for_range(*selected) == "Hello world\n你好"
+
+    press_key(overlay, Qt.Key.Key_Escape)
+    assert overlay._ocr_outcome is None
+    assert not overlay.toolbar.isHidden()
+    assert not overlay._resolved
+    overlay.cancel()

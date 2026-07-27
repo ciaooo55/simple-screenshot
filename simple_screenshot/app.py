@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import ctypes
+import multiprocessing
 import os
 import subprocess
 import sys
+from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
 
-import threading
-
 from PySide6.QtCore import (
+    QBuffer,
+    QByteArray,
+    QIODevice,
     QObject,
     QPoint,
     QSignalBlocker,
@@ -49,7 +52,6 @@ from .pin_window import PinWindow
 from .settings_dialog import SettingsDialog
 from .single_instance import SingleInstance
 from .startup import set_start_with_windows
-from .text_result_dialog import TextResultDialog
 
 
 APP_TITLE = "简易截图工具"
@@ -60,6 +62,7 @@ class _OcrWorker(QObject):
 
     finished = Signal(object)
     failed = Signal(str)
+    prewarmed = Signal(bool)
 
 
 def bundled_resource(relative_path: str) -> Path:
@@ -113,9 +116,13 @@ class AppController:
         self.overlay: CaptureOverlay | None = None
         self.pin_windows: list[PinWindow] = []
         self._pins_hidden_for_capture: list[PinWindow] = []
-        self._text_dialogs: list[TextResultDialog] = []
         self._ocr_busy = False
         self._ocr_worker: _OcrWorker | None = None
+        self._ocr_events = _OcrWorker()
+        self._ocr_events.prewarmed.connect(self._on_ocr_prewarmed)
+        self._ocr_target: CaptureOverlay | PinWindow | None = None
+        self._ocr_executor: ProcessPoolExecutor | None = None
+        self._ocr_process_ready = False
         self._last_save_as_dir: Path | None = None
         try:
             cleanup_stale_drag_copies()
@@ -151,17 +158,16 @@ class AppController:
         self._tray_click_timer.timeout.connect(
             lambda: self.request_capture("copy")
         )
+        self._ocr_idle_timer = QTimer(self.app)
+        self._ocr_idle_timer.setSingleShot(True)
+        self._ocr_idle_timer.setInterval(5 * 60 * 1000)
+        self._ocr_idle_timer.timeout.connect(self._release_idle_ocr_process)
 
         self._activate_initial_settings()
         QTimer.singleShot(650, self._show_startup_notice)
-        # 后台线程真正预热内置 OCR 引擎(加载模型 + 微型推理约 1-2s),
-        # 首次按 W 识别就不用付冷启动成本;放在启动后的空闲时刻。
-        QTimer.singleShot(
-            1500,
-            lambda: threading.Thread(
-                target=ocr.warmup, daemon=True, name="ocr-warmup"
-            ).start(),
-        )
+        # OCR 运行在独立进程:原生推理 DLL/显卡驱动崩溃不会带崩截图主程序。
+        # 启动后空闲时预热子进程,首次按 W 不承担模型加载成本。
+        QTimer.singleShot(1500, self._prewarm_ocr_process)
         self.app.aboutToQuit.connect(self.close)
 
     def _create_tray_menu(self) -> QMenu:
@@ -365,7 +371,9 @@ class AppController:
             overlay = CaptureOverlay(desktop, action)
             self.overlay = overlay
             overlay.completed.connect(self._capture_completed)
-            overlay.ocr_ready.connect(self._recognize_image)
+            overlay.ocr_ready.connect(
+                lambda image, current=overlay: self._recognize_image(image, current)
+            )
             overlay.cancelled.connect(self._capture_cancelled)
             overlay.start()
             if fullscreen:
@@ -422,19 +430,83 @@ class AppController:
             return
         self._save_image(image)
 
-    def _recognize_image(self, image: QImage) -> None:
-        """后台线程跑系统 OCR,完成后回主线程弹结果面板。
+    def _ensure_ocr_executor(self) -> ProcessPoolExecutor:
+        if self._ocr_executor is None:
+            self._ocr_executor = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
+        return self._ocr_executor
 
-        大图密集文字识别可达数秒,放在 GUI 线程会让整个应用假死。
+    def _reset_ocr_executor(self) -> None:
+        executor = self._ocr_executor
+        self._ocr_executor = None
+        self._ocr_process_ready = False
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _release_idle_ocr_process(self) -> None:
+        if self._ocr_busy:
+            self._ocr_idle_timer.start()
+            return
+        self._reset_ocr_executor()
+
+    def _prewarm_ocr_process(self) -> None:
+        try:
+            future = self._ensure_ocr_executor().submit(ocr.warmup)
+            future.add_done_callback(self._ocr_prewarm_done)
+        except Exception:
+            self._reset_ocr_executor()
+
+    def _ocr_prewarm_done(self, future: Future) -> None:
+        try:
+            future.result()
+        except Exception:
+            self._ocr_events.prewarmed.emit(False)
+        else:
+            self._ocr_events.prewarmed.emit(True)
+
+    def _on_ocr_prewarmed(self, success: bool) -> None:
+        if success:
+            self._ocr_process_ready = True
+            self._ocr_idle_timer.start()
+        else:
+            # 下次真正识别时重建;预热失败不打扰用户。
+            self._reset_ocr_executor()
+
+    @staticmethod
+    def _image_png_bytes(image: QImage) -> bytes:
+        data = QByteArray()
+        buffer = QBuffer(data)
+        if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+            raise RuntimeError("无法准备待识别图片")
+        try:
+            if not image.save(buffer, "PNG"):
+                raise RuntimeError("无法编码待识别图片")
+        finally:
+            buffer.close()
+        return bytes(data)
+
+    def _recognize_image(
+        self, image: QImage, target: CaptureOverlay | PinWindow | None = None
+    ) -> None:
+        """在隔离进程跑 OCR,完成后回主线程更新原图文字层。
+
+        大图密集文字识别可达数秒;原生 DLL 崩溃也只损失工作进程。
         """
         if self._ocr_busy:
+            if target is not None:
+                target.set_ocr_error("已有识别任务正在运行,请稍后重试")
+                return
             self.notify(
                 "正在识别中",
                 "请稍候(首次使用需要加载识别引擎,会多花几秒)。",
             )
             return
         self._ocr_busy = True
-        if not ocr.engine_ready():
+        self._ocr_idle_timer.stop()
+        self._ocr_target = target
+        if not self._ocr_process_ready:
             # 托盘应用没有可见窗口,WaitCursor 用户看不到;
             # 冷启动要几秒,不提示会被当成"按了没反应"。
             self.notify("正在识别", "首次识别需要加载引擎,请稍候几秒…")
@@ -443,29 +515,58 @@ class AppController:
         worker.finished.connect(self._on_ocr_finished)
         worker.failed.connect(self._on_ocr_failed)
         self._ocr_worker = worker  # 线程结束前必须持有引用,防 GC
-        image_copy = QImage(image)
+        try:
+            payload = self._image_png_bytes(image)
+            future = self._ensure_ocr_executor().submit(
+                ocr.recognize_png_bytes, payload
+            )
+        except Exception as exc:
+            worker.failed.emit(str(exc) or "无法启动识别进程")
+            return
 
-        def run() -> None:
+        def done(completed: Future) -> None:
             try:
-                outcome = ocr.recognize_image(image_copy)
+                outcome = completed.result()
             except Exception as exc:
-                worker.failed.emit(str(exc))
+                worker.failed.emit(
+                    str(exc) or "识别进程异常退出,请重试"
+                )
             else:
                 worker.finished.emit(outcome)
 
-        threading.Thread(target=run, daemon=True, name="ocr").start()
+        future.add_done_callback(done)
 
     def _finish_ocr_request(self) -> None:
         self._ocr_busy = False
         self._ocr_worker = None
+        self._ocr_idle_timer.start()
         QApplication.restoreOverrideCursor()
 
     def _on_ocr_failed(self, message: str) -> None:
+        target = self._ocr_target
+        self._ocr_target = None
+        # 推理异常可能来自原生进程崩溃;统一丢弃工作进程,下次自动重建。
+        self._reset_ocr_executor()
         self._finish_ocr_request()
+        if target is not None and target is self.overlay:
+            target.set_ocr_error(message)
+            return
+        if isinstance(target, PinWindow) and target in self.pin_windows:
+            target.set_ocr_error(message)
+            return
         self.notify("识别失败", message, warning=True)
 
     def _on_ocr_finished(self, outcome: ocr.OcrOutcome) -> None:
+        target = self._ocr_target
+        self._ocr_target = None
+        self._ocr_process_ready = True
         self._finish_ocr_request()
+        if target is not None:
+            if target is self.overlay:
+                target.set_ocr_result(outcome)
+            elif isinstance(target, PinWindow) and target in self.pin_windows:
+                target.set_ocr_result(outcome)
+            return
         if not outcome.text:
             self.notify(
                 "未识别到文字",
@@ -473,18 +574,8 @@ class AppController:
                 warning=True,
             )
             return
-        dialog = TextResultDialog(outcome.text)
-        self._text_dialogs.append(dialog)
-        dialog.finished.connect(
-            lambda *_args, current=dialog: (
-                self._text_dialogs.remove(current)
-                if current in self._text_dialogs
-                else None
-            )
-        )
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self.app.clipboard().setText(outcome.text)
+        self.notify("识别完成", "识别结果已复制到剪贴板。")
 
     def _save_image(self, image: QImage) -> bool:
         try:
@@ -523,7 +614,9 @@ class AppController:
         pin.save_requested.connect(
             lambda saved, pin=pin: self._save_pin_image(pin, saved)
         )
-        pin.ocr_requested.connect(self._recognize_image)
+        pin.ocr_requested.connect(
+            lambda image, current=pin: self._recognize_image(image, current)
+        )
         pin.save_as_requested.connect(
             lambda saved, pin=pin: self._save_pin_image_as(pin, saved)
         )
@@ -747,6 +840,7 @@ class AppController:
         if self._closed:
             return
         self._closed = True
+        self._reset_ocr_executor()
         self.hotkeys.close()
         self.tray.hide()
 

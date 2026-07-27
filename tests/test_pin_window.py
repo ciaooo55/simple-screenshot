@@ -4,6 +4,7 @@ from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent
 
 from simple_screenshot.pin_window import PinWindow
+from simple_screenshot.ocr import OcrOutcome, OcrSpan
 
 
 def make_image(width: int = 100, height: int = 60, ratio: float = 1.0) -> QImage:
@@ -262,4 +263,42 @@ def test_request_ocr_emits_image(qapplication):
 
     assert len(received) == 1
     assert received[0].size() == QSize(100, 60)
+    pin.close()
+
+
+def test_pin_ocr_result_can_select_all_copy_and_escape(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    outcome = OcrOutcome(
+        "Hello\n你好",
+        2,
+        (
+            OcrSpan("Hello", 0, 0, 5, 5, 55, 20),
+            OcrSpan("你", 1, 1, 5, 30, 20, 50),
+            OcrSpan("好", 1, 2, 20, 30, 35, 50),
+        ),
+    )
+    pin._ocr_loading = True
+    pin.set_ocr_result(outcome)
+
+    pin.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_A,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+    pin.keyPressEvent(
+        QKeyEvent(
+            QKeyEvent.Type.KeyPress,
+            Qt.Key.Key_C,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+    assert QGuiApplication.clipboard().text() == "Hello\n你好"
+
+    pin.keyPressEvent(
+        QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.NoModifier)
+    )
+    assert pin._ocr_outcome is None
+    assert pin._hud_text is not None  # 复制反馈仍保留,窗口没有走关闭分支。
     pin.close()
