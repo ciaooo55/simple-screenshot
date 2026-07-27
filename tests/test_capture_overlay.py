@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent, QPainterPath
 
 from simple_screenshot.annotations import (
@@ -86,6 +86,22 @@ def test_finish_emits_selected_image_action_and_position(qapplication):
     assert results[0][1] == "save"
     assert results[0][2].x() == 10
     assert results[0][2].y() == 20
+
+
+def test_quick_preview_emits_preview_action_when_selection_finishes(qapplication):
+    image = QImage(320, 200, QImage.Format.Format_ARGB32)
+    image.fill(QColor("white"))
+    desktop = CapturedDesktop(image, QRect(0, 0, 320, 200), 1.0)
+    overlay = CaptureOverlay(desktop, "save", quick_preview=True)
+    results: list[tuple[str, QImage]] = []
+    overlay.completed.connect(lambda image, action, pos: results.append((action, image)))
+
+    drag(overlay, QPointF(10, 20), QPointF(90, 70))
+    qapplication.processEvents()
+
+    assert len(results) == 1
+    assert results[0][0] == "preview:save"
+    assert results[0][1].size() == QSize(80, 50)
 
 
 def test_double_click_finishes_with_default_action(qapplication):

@@ -638,3 +638,91 @@ class PinWindow(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.closed.emit(self)
         event.accept()
+
+
+class CapturePreviewWindow(PinWindow):
+    """截图后的简洁预览:像图片窗口一样保留最小化与双击主动作。"""
+
+    primary_requested = Signal(str)
+    edit_requested = Signal()
+
+    def __init__(
+        self,
+        image: QImage,
+        logical_size: QSize,
+        global_pos: QPoint,
+        primary_action: str,
+    ) -> None:
+        super().__init__(image, logical_size, global_pos)
+        self.primary_action = (
+            primary_action if primary_action in {"copy", "save"} else "copy"
+        )
+        action_text = "复制" if self.primary_action == "copy" else "保存"
+        self.setWindowTitle(f"截图预览 - 双击{action_text}")
+        # 用原生标题栏而非自绘按钮:Windows 的最小化语义、任务栏行为和
+        # 键盘无障碍支持都天然正确,也更像普通图片查看窗口。
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and not self._ocr_loading
+            and self._ocr_outcome is None
+        ):
+            self.primary_requested.emit(self.primary_action)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (
+            self._ocr_outcome is None
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            if event.key() == Qt.Key.Key_C:
+                self.primary_requested.emit("copy")
+                event.accept()
+                return
+            if (
+                event.key() == Qt.Key.Key_S
+                and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            ):
+                self.primary_requested.emit("save")
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            self._exit_ocr_mode()
+            event.accept()
+            return
+        menu = QMenu(self)
+        copy_action = menu.addAction("复制图片")
+        save_action = menu.addAction("保存图片")
+        ocr_action = menu.addAction("识别文字")
+        menu.addSeparator()
+        edit_action = menu.addAction("标注编辑")
+        minimize_action = menu.addAction("最小化")
+        menu.addSeparator()
+        close_action = menu.addAction("关闭预览")
+        chosen = menu.exec(event.globalPos())
+        if chosen == copy_action:
+            self.primary_requested.emit("copy")
+        elif chosen == save_action:
+            self.primary_requested.emit("save")
+        elif chosen == ocr_action:
+            self.request_ocr()
+        elif chosen == edit_action:
+            self.edit_requested.emit()
+        elif chosen == minimize_action:
+            self.showMinimized()
+        elif chosen == close_action:
+            self.close()
+        event.accept()

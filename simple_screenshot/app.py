@@ -14,6 +14,8 @@ from PySide6.QtCore import (
     QIODevice,
     QObject,
     QPoint,
+    QRect,
+    QRectF,
     QSignalBlocker,
     QSize,
     QTimer,
@@ -48,7 +50,7 @@ from .output import (
     save_png_atomic,
     unique_screenshot_path,
 )
-from .pin_window import PinWindow
+from .pin_window import CapturePreviewWindow, PinWindow
 from .settings_dialog import SettingsDialog
 from .single_instance import SingleInstance
 from .startup import set_start_with_windows
@@ -368,7 +370,7 @@ class AppController:
                 return
             self.app.processEvents()
             desktop = capture_virtual_desktop()
-            overlay = CaptureOverlay(desktop, action)
+            overlay = CaptureOverlay(desktop, action, quick_preview=True)
             self.overlay = overlay
             overlay.completed.connect(self._capture_completed)
             overlay.ocr_ready.connect(
@@ -407,6 +409,13 @@ class AppController:
         self.overlay = None
         self._last_image = image
         self._restore_settings_dialog()
+        if action.startswith("preview:"):
+            self._create_capture_preview(
+                image,
+                global_pos,
+                action.removeprefix("preview:"),
+            )
+            return
         if action == "copy":
             try:
                 self.app.clipboard().setImage(image)
@@ -429,6 +438,83 @@ class AppController:
             # _last_image 保存的是带完整标注的图,托盘"保存最近一张"不丢标注。
             return
         self._save_image(image)
+
+    def _create_capture_preview(
+        self, image: QImage, global_pos: QPoint, primary_action: str
+    ) -> None:
+        """显示框选后的轻量图片预览,把复杂编辑收进按需入口。"""
+        logical = image.deviceIndependentSize()
+        preview = CapturePreviewWindow(
+            image,
+            QSize(max(1, round(logical.width())), max(1, round(logical.height()))),
+            global_pos,
+            primary_action,
+        )
+        preview.closed.connect(self._pin_closed)
+        preview.save_requested.connect(
+            lambda saved, pin=preview: self._save_pin_image(pin, saved)
+        )
+        preview.ocr_requested.connect(
+            lambda image, current=preview: self._recognize_image(image, current)
+        )
+        preview.save_as_requested.connect(
+            lambda saved, pin=preview: self._save_pin_image_as(pin, saved)
+        )
+        preview.close_all_requested.connect(self.close_all_pins)
+        preview.primary_requested.connect(
+            lambda action, current=preview: self._complete_preview_action(
+                current, action
+            )
+        )
+        preview.edit_requested.connect(
+            lambda current=preview: self._edit_capture_preview(current)
+        )
+        self.pin_windows.append(preview)
+        preview.show()
+        preview.raise_()
+        preview.activateWindow()
+
+    def _complete_preview_action(
+        self, preview: CapturePreviewWindow, action: str
+    ) -> None:
+        if preview not in self.pin_windows:
+            return
+        if action == "copy":
+            preview.copy_to_clipboard()
+        elif action == "save":
+            preview.show_save_result(self._save_image(preview.image))
+
+    def _edit_capture_preview(self, preview: CapturePreviewWindow) -> None:
+        """从预览按需回到全功能标注,而不重新截屏。"""
+        if self.overlay is not None or preview not in self.pin_windows:
+            return
+        image = QImage(preview.image)
+        logical = image.deviceIndependentSize()
+        render_scale = max(1.0, float(image.devicePixelRatio()))
+        geometry = QRect(
+            preview.pos(),
+            QSize(max(1, round(logical.width())), max(1, round(logical.height()))),
+        )
+        action = preview.primary_action
+        preview.close()
+        desktop = CapturedDesktop(image, geometry, render_scale)
+        overlay = CaptureOverlay(
+            desktop,
+            action,
+            window_targets=[],
+            quick_preview=False,
+        )
+        self.overlay = overlay
+        overlay.completed.connect(self._capture_completed)
+        overlay.ocr_ready.connect(
+            lambda source, current=overlay: self._recognize_image(source, current)
+        )
+        overlay.cancelled.connect(self._capture_cancelled)
+        overlay.start()
+        overlay.selection = QRectF(
+            0.0, 0.0, float(geometry.width()), float(geometry.height())
+        )
+        overlay._accept_selection()
 
     def _ensure_ocr_executor(self) -> ProcessPoolExecutor:
         if self._ocr_executor is None:

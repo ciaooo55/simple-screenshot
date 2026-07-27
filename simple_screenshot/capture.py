@@ -199,10 +199,14 @@ class CaptureOverlay(QWidget):
         desktop: CapturedDesktop,
         action: str,
         window_targets: list[WindowTarget] | None = None,
+        quick_preview: bool = False,
     ) -> None:
         super().__init__(None)
         self.desktop = desktop
         self.action = action
+        # 默认截图走简洁预览流;从预览窗口显式进入的标注编辑器才展示
+        # 传统工具栏。默认值保持 False,便于嵌入式调用和已有测试。
+        self._quick_preview = quick_preview
         self._backdrop: QPixmap | None = None
         self._backdrop_key: tuple[int, int, float] | None = None
         self.state = "selecting"
@@ -1764,7 +1768,13 @@ class CaptureOverlay(QWidget):
         if resolved_action == "ocr":
             self.request_ocr()
             return
-        if resolved_action not in {"copy", "save", "pin", "save_as"}:
+        preview_actions = {"preview:copy", "preview:save", "preview:pin"}
+        if resolved_action not in {
+            "copy",
+            "save",
+            "pin",
+            "save_as",
+        } | preview_actions:
             return
         self._commit_inline_text()
         image = render_selection(
@@ -2062,6 +2072,11 @@ class CaptureOverlay(QWidget):
         self._annotations_before_reselect = None
 
     def _accept_selection(self) -> None:
+        if self._quick_preview:
+            # 主要路径只停在框选:松开鼠标立即得到可缩放、可最小化的图片
+            # 预览。画笔等功能由预览右键中的"标注编辑"按需进入。
+            self.finish(f"preview:{self.action}")
+            return
         self.state = "editing"
         # 框选一确定就能直接涂画:默认切到画笔。重选区回来时保留用户
         # 显式选过的标注工具;V/1 可随时切回"选择"来拖动选区或双击完成。

@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent
 
-from simple_screenshot.pin_window import PinWindow
+from simple_screenshot.pin_window import CapturePreviewWindow, PinWindow
 from simple_screenshot.ocr import OcrOutcome, OcrSpan
 
 
@@ -51,6 +51,26 @@ def test_escape_closes_and_emits_closed(qapplication):
     qapplication.processEvents()
 
     assert closed == [pin]
+
+
+def test_capture_preview_has_minimize_and_double_click_primary_action(qapplication):
+    preview = CapturePreviewWindow(
+        make_image(), QSize(100, 60), QPoint(0, 0), "save"
+    )
+    actions: list[str] = []
+    preview.primary_requested.connect(actions.append)
+
+    preview.mouseDoubleClickEvent(
+        type("Event", (), {"button": lambda self: Qt.MouseButton.LeftButton,
+                             "accept": lambda self: None})()  # type: ignore[arg-type]
+    )
+
+    assert actions == ["save"]
+    assert bool(
+        preview.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+    )
+    assert "双击保存" in preview.windowTitle()
+    preview.close()
 
 
 def test_ctrl_c_copies_image_to_clipboard(qapplication):
