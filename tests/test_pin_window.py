@@ -106,6 +106,28 @@ def test_preview_primary_action_closes_after_copy(qapplication):
     assert preview not in controller.pin_windows
 
 
+def test_preview_hides_quick_pen_while_ocr_is_active(qapplication):
+    preview = CapturePreviewWindow(
+        make_image(), QSize(100, 60), QPoint(0, 0), "copy"
+    )
+
+    preview.request_ocr()
+
+    assert preview._ocr_toolbar_hidden
+    assert preview._preview_toolbar.isHidden()
+
+    preview.set_ocr_result(
+        OcrOutcome("A", 1, (OcrSpan("A", 0, 0, 5, 5, 20, 20),))
+    )
+    assert preview._ocr_outcome is not None
+    assert preview._preview_toolbar.isHidden()
+
+    preview._exit_ocr_mode()
+    assert not preview._ocr_toolbar_hidden
+    assert not preview._preview_toolbar.isHidden()
+    preview.close()
+
+
 def test_ctrl_c_copies_image_to_clipboard(qapplication):
     pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
 

@@ -1363,6 +1363,19 @@ class CaptureOverlay(QWidget):
         if self._cancel_active_gesture():
             return
         if self.state == "editing":
+            # 右键是最快的反悔路径:已有完成标注时先撤销最后一步;只剩
+            # 干净选区时才回到框选,这样下一次右键才会真正取消截图。
+            if self.annotations:
+                if self._history:
+                    self.undo()
+                else:
+                    # 正常交互每笔都会先压历史;保留这个兜底让外部恢复的
+                    # 标注、未来导入标注也遵守同一条右键语义。
+                    self._redo_stack.append(list(self.annotations))
+                    self.annotations.pop()
+                    self._sync_annotation_actions()
+                    self.update()
+                return
             self._back_to_selecting()
             return
         if self.drag_origin is not None:

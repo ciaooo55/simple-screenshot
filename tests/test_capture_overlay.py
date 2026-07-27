@@ -68,6 +68,29 @@ def test_escape_cancels_without_completing(qapplication):
     assert completed == []
 
 
+def test_right_click_undo_then_reselect_then_cancel(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(10, 20, 180, 100)
+    overlay.state = "editing"
+    path = QPainterPath(QPointF(20, 30))
+    path.lineTo(QPointF(80, 60))
+    overlay._push_history()
+    overlay.annotations.append(PenAnnotation(path, "#ff0000", 4.0))
+    cancelled: list[bool] = []
+    overlay.cancelled.connect(lambda: cancelled.append(True))
+
+    overlay._handle_right_press()
+    assert overlay.state == "editing"
+    assert overlay.annotations == []
+
+    overlay._handle_right_press()
+    assert overlay.state == "selecting"
+    assert overlay.selection.isEmpty()
+
+    overlay._handle_right_press()
+    assert cancelled == [True]
+
+
 def test_finish_emits_selected_image_action_and_position(qapplication):
     overlay = make_overlay("save")
     overlay.selection = QRectF(10, 20, 80, 50)
@@ -541,9 +564,15 @@ def test_right_click_steps_back_before_cancelling(qapplication):
     overlay.mousePressEvent(  # type: ignore[arg-type]
         MouseEventStub(QPointF(50, 50), Qt.MouseButton.RightButton)
     )
+    assert overlay.state == "editing"
+    assert overlay.annotations == []
+    assert cancelled == []
+
+    overlay.mousePressEvent(  # type: ignore[arg-type]
+        MouseEventStub(QPointF(50, 50), Qt.MouseButton.RightButton)
+    )
     assert overlay.state == "selecting"
     assert overlay.selection.isEmpty()
-    assert overlay.annotations == []
     assert cancelled == []
 
     overlay.mousePressEvent(  # type: ignore[arg-type]

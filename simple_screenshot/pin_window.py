@@ -670,6 +670,7 @@ class CapturePreviewWindow(PinWindow):
         )
         self._toolbar_height = 42
         self._canvas_margin = 28.0
+        self._ocr_toolbar_hidden = False
         self._preview_toolbar = self._create_preview_toolbar()
         self._configure_viewport(global_pos)
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -698,7 +699,7 @@ class CapturePreviewWindow(PinWindow):
         add_action("复制", "复制图片并关闭预览（Ctrl+C）", lambda: self.primary_requested.emit("copy"))
         add_action("保存", "保存图片并关闭预览（Ctrl+S）", lambda: self.primary_requested.emit("save"))
         add_action("识别", "识别图片文字（W）", self.request_ocr)
-        add_action("编辑", "进入标注编辑", self.edit_requested.emit)
+        add_action("画笔", "进入画笔标注", self.edit_requested.emit)
         layout.addStretch(1)
         return toolbar
 
@@ -735,7 +736,10 @@ class CapturePreviewWindow(PinWindow):
     def _image_target_rect(self) -> QRectF:
         canvas = QRectF(self.rect()).adjusted(
             self._canvas_margin,
-            self._toolbar_height + self._canvas_margin,
+            (
+                0 if self._ocr_toolbar_hidden else self._toolbar_height
+            )
+            + self._canvas_margin,
             -self._canvas_margin,
             -self._canvas_margin,
         )
@@ -813,6 +817,32 @@ class CapturePreviewWindow(PinWindow):
             return
         event.accept()
 
+    def request_ocr(self) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            return
+        # OCR 只保留原图和文字选择层;快捷画笔在结果复制或退出前不可见。
+        self._ocr_toolbar_hidden = True
+        self._preview_toolbar.hide()
+        super().request_ocr()
+
+    def set_ocr_result(self, outcome: OcrOutcome) -> None:
+        super().set_ocr_result(outcome)
+        if self._ocr_outcome is None:
+            self._restore_preview_toolbar()
+
+    def set_ocr_error(self, message: str) -> None:
+        super().set_ocr_error(message)
+        self._restore_preview_toolbar()
+
+    def _exit_ocr_mode(self) -> None:
+        super()._exit_ocr_mode()
+        self._restore_preview_toolbar()
+
+    def _restore_preview_toolbar(self) -> None:
+        self._ocr_toolbar_hidden = False
+        self._preview_toolbar.show()
+        self.update()
+
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -852,7 +882,7 @@ class CapturePreviewWindow(PinWindow):
         save_action = menu.addAction("保存图片")
         ocr_action = menu.addAction("识别文字")
         menu.addSeparator()
-        edit_action = menu.addAction("标注编辑")
+        edit_action = menu.addAction("画笔标注")
         minimize_action = menu.addAction("最小化")
         menu.addSeparator()
         close_action = menu.addAction("关闭预览")
