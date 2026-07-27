@@ -266,6 +266,28 @@ def test_request_ocr_emits_image(qapplication):
     pin.close()
 
 
+def test_pin_ocr_waiting_passes_input_until_result(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    received: list[QImage] = []
+    pin.ocr_requested.connect(lambda image: received.append(image))
+
+    pin.request_ocr()
+
+    assert len(received) == 1
+    assert bool(
+        pin.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    )
+
+    pin.set_ocr_result(
+        OcrOutcome("A", 1, (OcrSpan("A", 0, 0, 5, 5, 20, 20),))
+    )
+
+    assert not bool(
+        pin.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    )
+    pin.close()
+
+
 def test_pin_ocr_result_can_select_all_copy_and_escape(qapplication):
     pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
     outcome = OcrOutcome(

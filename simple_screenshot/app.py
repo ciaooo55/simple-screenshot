@@ -510,7 +510,6 @@ class AppController:
             # 托盘应用没有可见窗口,WaitCursor 用户看不到;
             # 冷启动要几秒,不提示会被当成"按了没反应"。
             self.notify("正在识别", "首次识别需要加载引擎,请稍候几秒…")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         worker = _OcrWorker()
         worker.finished.connect(self._on_ocr_finished)
         worker.failed.connect(self._on_ocr_failed)
@@ -540,7 +539,6 @@ class AppController:
         self._ocr_busy = False
         self._ocr_worker = None
         self._ocr_idle_timer.start()
-        QApplication.restoreOverrideCursor()
 
     def _on_ocr_failed(self, message: str) -> None:
         target = self._ocr_target

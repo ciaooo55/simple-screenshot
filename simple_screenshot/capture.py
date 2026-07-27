@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QRegion,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -244,6 +245,7 @@ class CaptureOverlay(QWidget):
         self._ocr_focus: int | None = None
         self._ocr_hover: int | None = None
         self._ocr_dragging = False
+        self._ocr_error_pending = False
 
         self.setWindowTitle("区域截图")
         self.setWindowFlags(
@@ -612,19 +614,24 @@ class CaptureOverlay(QWidget):
 
     def _draw_ocr_layer(self, painter: QPainter) -> None:
         if self._ocr_loading:
-            text = "正在识别文字…"
+            # OCR 期间遮罩只保留选区且鼠标键盘穿透;提示必须足够小,
+            # 不能遮住用户仍在参考的图片内容。
+            text = "正在后台识别…"
             metrics = painter.fontMetrics()
             rect = QRectF(
-                self.selection.center().x() - metrics.horizontalAdvance(text) / 2 - 14,
-                self.selection.center().y() - metrics.height(),
-                metrics.horizontalAdvance(text) + 28,
-                metrics.height() + 14,
+                self.selection.left() + 7,
+                self.selection.top() + 7,
+                metrics.horizontalAdvance(text) + 16,
+                metrics.height() + 8,
             )
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(20, 23, 28, 225))
             painter.drawRoundedRect(rect, 5, 5)
             painter.setPen(QColor("white"))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+            return
+        if self._ocr_error_pending:
+            self._draw_style_notice(painter)
             return
         if self._ocr_outcome is None:
             return
@@ -637,22 +644,19 @@ class CaptureOverlay(QWidget):
             elif index == self._ocr_hover:
                 painter.fillRect(rect.adjusted(-1, -1, 1, 1), QColor(88, 166, 255, 42))
 
-        # 字符高亮受选区裁剪;状态标识优先放在选区外,不能继承裁剪区。
+        # OCR 临时层只显示选区,状态标识放在图片内部,避免挡住用户对
+        # 其他应用的操作。
         painter.setClipping(False)
         hint = f"文字选择 · {self._ocr_outcome.line_count} 行"
         metrics = painter.fontMetrics()
         hint_width = metrics.horizontalAdvance(hint) + 20
         hint_height = metrics.height() + 10
-        below = self.selection.bottom() + 8
-        if below + hint_height <= self.height() - 4:
-            hint_y = below
-        elif self.selection.top() - hint_height - 8 >= 4:
-            hint_y = self.selection.top() - hint_height - 8
-        else:
-            hint_y = self.selection.bottom() - hint_height - 6
         hint_rect = QRectF(
-            max(4.0, min(self.selection.left(), self.width() - hint_width - 4.0)),
-            hint_y,
+            min(
+                self.selection.right() - hint_width - 7,
+                self.selection.left() + 7,
+            ),
+            self.selection.bottom() - hint_height - 7,
             hint_width,
             hint_height,
         )
@@ -743,11 +747,26 @@ class CaptureOverlay(QWidget):
         self._ocr_focus = None
         self._ocr_hover = None
         self._ocr_dragging = False
+        self._ocr_error_pending = False
+        self.clearMask()
+        self._set_ocr_input_passthrough(False)
         self.toolbar.show()
         self._position_toolbar()
         self._sync_annotation_actions()
         self._update_cursor()
+        self.grabKeyboard()
         self.update()
+
+    def _set_ocr_input_passthrough(self, enabled: bool) -> None:
+        """让等待中的截图仅作参考,不抢用户正在做的其他事情。"""
+        current = bool(
+            self.windowFlags() & Qt.WindowType.WindowTransparentForInput
+        )
+        if current == enabled:
+            return
+        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
+        # 改 native flag 会临时隐藏顶层窗口,恢复显示但不激活它。
+        self.show()
 
     _HELP_ROWS = (
         ("单击窗口 / 拖动", "吸附选择 / 自由框选(Shift 正方形)"),
@@ -997,6 +1016,10 @@ class CaptureOverlay(QWidget):
         if self._ocr_loading:
             event.accept()
             return
+        if self._ocr_error_pending:
+            self._exit_ocr_mode()
+            event.accept()
+            return
         if self._ocr_outcome is not None:
             index = self._ocr_index_at(event.position())
             self._ocr_anchor = index
@@ -1078,6 +1101,8 @@ class CaptureOverlay(QWidget):
         self._pointer_pos = QPointF(point)
         if self._ocr_loading:
             return
+        if self._ocr_error_pending:
+            return
         if self._ocr_outcome is not None:
             index = self._ocr_index_at(point)
             if self._ocr_dragging and index is not None:
@@ -1142,6 +1167,8 @@ class CaptureOverlay(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         if self._ocr_loading:
+            return
+        if self._ocr_error_pending:
             return
         if self._ocr_outcome is not None:
             if self._ocr_dragging:
@@ -1298,7 +1325,11 @@ class CaptureOverlay(QWidget):
         """右键分级回退:帮助 → 文字框 → 当前拖拽 → 编辑态回框选 → 退出。"""
         if self._resolved:
             return
-        if self._ocr_loading or self._ocr_outcome is not None:
+        if (
+            self._ocr_loading
+            or self._ocr_outcome is not None
+            or self._ocr_error_pending
+        ):
             self._exit_ocr_mode()
             return
         if self._help_visible:
@@ -1391,6 +1422,11 @@ class CaptureOverlay(QWidget):
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self._ocr_loading:
             if event.key() == Qt.Key.Key_Escape:
+                self._exit_ocr_mode()
+            event.accept()
+            return
+        if self._ocr_error_pending:
+            if event.key() in {Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter}:
                 self._exit_ocr_mode()
             event.accept()
             return
@@ -1680,8 +1716,15 @@ class CaptureOverlay(QWidget):
             return
         ocr_image.setDevicePixelRatio(self.desktop.render_scale)
         self._ocr_loading = True
+        self._ocr_error_pending = False
         self.toolbar.hide()
         self.setCursor(Qt.CursorShape.WaitCursor)
+        # 从这一刻起截屏只是贴在原位的参考图:窗口裁成选区,完全不收
+        # 输入,原先正在使用的聊天/浏览器/编辑器不被打断。
+        mask = QRectF(self.selection).adjusted(-1, -1, 1, 1).toAlignedRect()
+        self.setMask(QRegion(mask.intersected(self.rect())))
+        self.releaseKeyboard()
+        self._set_ocr_input_passthrough(True)
         self.ocr_ready.emit(ocr_image)
         self.update()
 
@@ -1689,6 +1732,7 @@ class CaptureOverlay(QWidget):
         if self._resolved or not self._ocr_loading:
             return
         self._ocr_loading = False
+        self._set_ocr_input_passthrough(False)
         if not outcome.text or not outcome.spans:
             self._style_notice = "未识别到可选择的文字"
             QTimer.singleShot(1600, self._clear_style_notice)
@@ -1703,9 +1747,15 @@ class CaptureOverlay(QWidget):
     def set_ocr_error(self, message: str) -> None:
         if self._resolved or not self._ocr_loading:
             return
+        self._ocr_loading = False
+        self._set_ocr_input_passthrough(False)
         self._style_notice = message or "识别失败"
         QTimer.singleShot(2200, self._clear_style_notice)
-        self._exit_ocr_mode()
+        # 失败也不突然展开全屏遮罩抢走当前工作;点击这张固定图片或按
+        # Esc/Enter 才返回编辑。
+        self._ocr_error_pending = True
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
 
     def finish(self, action: str | None = None) -> None:
         if self._resolved or self.selection.isEmpty():

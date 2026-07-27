@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent, QPainterPath
 
 from simple_screenshot.annotations import (
@@ -1255,6 +1255,35 @@ def test_ocr_finish_drops_overlays_but_keeps_mosaic(qapplication):
     assert overlay._ocr_loading
     assert not overlay._resolved
     assert len(overlay.annotations) == 2
+    overlay.cancel()
+
+
+def test_ocr_waiting_keeps_selection_visible_but_passes_input(qapplication):
+    overlay = make_overlay()
+    overlay.selection = QRectF(20, 20, 200, 100)
+    overlay.state = "editing"
+    requested: list[QImage] = []
+    overlay.ocr_ready.connect(lambda image: requested.append(image))
+
+    overlay.request_ocr()
+
+    assert len(requested) == 1
+    assert overlay._ocr_loading
+    assert bool(
+        overlay.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    )
+    # 全屏遮罩已裁成原位图片,框外可继续操作下面的其他应用。
+    assert overlay.mask().contains(QPoint(100, 60))
+    assert not overlay.mask().contains(QPoint(5, 5))
+
+    overlay.set_ocr_result(make_ocr_outcome())
+
+    assert not bool(
+        overlay.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    )
+    assert overlay._ocr_outcome is not None
+    overlay._exit_ocr_mode()
+    assert overlay.mask().isEmpty()
     overlay.cancel()
 
 

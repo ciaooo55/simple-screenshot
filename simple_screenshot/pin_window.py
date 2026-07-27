@@ -341,6 +341,9 @@ class PinWindow(QWidget):
             return
         self._ocr_loading = True
         self.setCursor(Qt.CursorShape.WaitCursor)
+        # 等待引擎时贴图只是固定参考,把鼠标交还给下方窗口。结果回来前
+        # 用户可以继续聊天、浏览或操作任何其他程序。
+        self._set_ocr_input_passthrough(True)
         self.ocr_requested.emit(self._image)
         self.update()
 
@@ -348,6 +351,7 @@ class PinWindow(QWidget):
         if not self._ocr_loading:
             return
         self._ocr_loading = False
+        self._set_ocr_input_passthrough(False)
         if not outcome.text or not outcome.spans:
             self._show_hud("未识别到可选择的文字")
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -360,6 +364,7 @@ class PinWindow(QWidget):
         if not self._ocr_loading:
             return
         self._ocr_loading = False
+        self._set_ocr_input_passthrough(False)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._show_hud(message or "识别失败")
 
@@ -370,8 +375,19 @@ class PinWindow(QWidget):
         self._ocr_focus = None
         self._ocr_hover = None
         self._ocr_dragging = False
+        self._set_ocr_input_passthrough(self._click_through)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.update()
+
+    def _set_ocr_input_passthrough(self, enabled: bool) -> None:
+        current = bool(
+            self.windowFlags() & Qt.WindowType.WindowTransparentForInput
+        )
+        if current == enabled:
+            return
+        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
+        # setWindowFlag 会临时隐藏置顶窗口;show() 恢复画面但不抢焦点。
+        self.show()
 
     def _draw_hud(self, painter: QPainter, text: str) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
