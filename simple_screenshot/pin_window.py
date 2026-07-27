@@ -19,7 +19,7 @@ from PySide6.QtGui import (
     QPixmap,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QMenu, QToolButton, QWidget
 
 from .ocr import OcrOutcome, OcrSpan
 
@@ -641,7 +641,7 @@ class PinWindow(QWidget):
 
 
 class CapturePreviewWindow(PinWindow):
-    """截图后的简洁预览:像图片窗口一样保留最小化与双击主动作。"""
+    """截图后的固定画布预览:缩放图片,绝不在滚轮时移动窗口。"""
 
     primary_requested = Signal(str)
     edit_requested = Signal()
@@ -668,6 +668,150 @@ class CapturePreviewWindow(PinWindow):
             | Qt.WindowType.WindowMinimizeButtonHint
             | Qt.WindowType.WindowCloseButtonHint
         )
+        self._toolbar_height = 42
+        self._canvas_margin = 28.0
+        self._preview_toolbar = self._create_preview_toolbar()
+        self._configure_viewport(global_pos)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _create_preview_toolbar(self) -> QFrame:
+        toolbar = QFrame(self)
+        toolbar.setObjectName("previewToolbar")
+        toolbar.setStyleSheet(
+            "#previewToolbar { background: #fafafa; border-bottom: 1px solid #dcdcdc; } "
+            "QToolButton { color: #3f3f3f; border: 0; border-radius: 4px; "
+            "padding: 4px 10px; min-width: 42px; } "
+            "QToolButton:hover { background: #e9e9e9; } "
+            "QToolButton:pressed { background: #dcdcdc; }"
+        )
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(4)
+
+        def add_action(label: str, tooltip: str, callback) -> None:  # type: ignore[no-untyped-def]
+            button = QToolButton(toolbar)
+            button.setText(label)
+            button.setToolTip(tooltip)
+            button.clicked.connect(callback)
+            layout.addWidget(button)
+
+        add_action("复制", "复制图片并关闭预览（Ctrl+C）", lambda: self.primary_requested.emit("copy"))
+        add_action("保存", "保存图片并关闭预览（Ctrl+S）", lambda: self.primary_requested.emit("save"))
+        add_action("识别", "识别图片文字（W）", self.request_ocr)
+        add_action("编辑", "进入标注编辑", self.edit_requested.emit)
+        layout.addStretch(1)
+        return toolbar
+
+    def _configure_viewport(self, global_pos: QPoint) -> None:
+        """用固定查看器画布承载图片,而不是把图片本身当成窗口。"""
+        screen = QGuiApplication.screenAt(global_pos) or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 800)
+        max_width = max(420, round(available.width() * 0.72))
+        max_height = max(320, round(available.height() * 0.72))
+        preferred = QSize(
+            max(420, self._base_size.width() + round(self._canvas_margin * 2)),
+            max(
+                320,
+                self._base_size.height()
+                + round(self._canvas_margin * 2)
+                + self._toolbar_height,
+            ),
+        )
+        viewport = QSize(
+            min(max_width, preferred.width()),
+            min(max_height, preferred.height()),
+        )
+        self.resize(viewport)
+        usable_width = max(1.0, viewport.width() - self._canvas_margin * 2)
+        usable_height = max(1.0, viewport.height() - self._canvas_margin * 2)
+        fit = min(
+            1.0,
+            usable_width / max(1.0, self._base_size.width()),
+            usable_height / max(1.0, self._base_size.height()),
+        )
+        self._min_zoom = min(self._min_zoom, fit)
+        self._zoom = fit
+
+    def _image_target_rect(self) -> QRectF:
+        canvas = QRectF(self.rect()).adjusted(
+            self._canvas_margin,
+            self._toolbar_height + self._canvas_margin,
+            -self._canvas_margin,
+            -self._canvas_margin,
+        )
+        width = self._base_size.width() * self._zoom
+        height = self._base_size.height() * self._zoom
+        return QRectF(
+            canvas.center().x() - width / 2,
+            canvas.center().y() - height / 2,
+            width,
+            height,
+        )
+
+    def set_zoom(self, zoom: float, anchor: QPointF | None = None) -> None:
+        """查看器只放缩画布内的图片,窗口始终固定在原位。"""
+        del anchor
+        clamped = min(MAX_ZOOM, max(self._min_zoom, zoom))
+        if math.isclose(clamped, 1.0, rel_tol=1e-9):
+            clamped = 1.0
+        if clamped == self._zoom:
+            return
+        self._zoom = clamped
+        self._smooth_timer.start()
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#f5f5f5"))
+        painter.setRenderHint(
+            QPainter.RenderHint.SmoothPixmapTransform,
+            not self._smooth_timer.isActive(),
+        )
+        target = self._image_target_rect()
+        painter.drawImage(target, self._image)
+        painter.setPen(QPen(QColor("#d6d6d6"), 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(target.adjusted(0.5, 0.5, -0.5, -0.5))
+        if self._ocr_loading or self._ocr_outcome is not None:
+            self._draw_ocr_layer(painter)
+        if self._hud_text:
+            self._draw_hud(painter, self._hud_text)
+        painter.end()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if hasattr(self, "_preview_toolbar"):
+            self._preview_toolbar.setGeometry(
+                0, 0, self.width(), self._toolbar_height
+            )
+        super().resizeEvent(event)
+
+    def _ocr_span_rect(self, span: OcrSpan) -> QRectF:
+        target = self._image_target_rect()
+        return QRectF(
+            target.left() + span.left * target.width() / self._image.width(),
+            target.top() + span.top * target.height() / self._image.height(),
+            max(1.0, (span.right - span.left) * target.width() / self._image.width()),
+            max(1.0, (span.bottom - span.top) * target.height() / self._image.height()),
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            super().mousePressEvent(event)
+            return
+        event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            super().mouseMoveEvent(event)
+            return
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            super().mouseReleaseEvent(event)
+            return
+        event.accept()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if (

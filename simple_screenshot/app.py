@@ -470,6 +470,13 @@ class AppController:
             lambda current=preview: self._edit_capture_preview(current)
         )
         self.pin_windows.append(preview)
+        # 查看器像微信/图片应用一样在当前屏幕居中打开,不会继承框选边缘
+        # 位置而半截滑出屏幕。
+        screen = QGuiApplication.screenAt(global_pos) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            frame = preview.frameGeometry()
+            frame.moveCenter(screen.availableGeometry().center())
+            preview.move(frame.topLeft())
         preview.show()
         preview.raise_()
         preview.activateWindow()
@@ -481,8 +488,10 @@ class AppController:
             return
         if action == "copy":
             preview.copy_to_clipboard()
+            preview.close()
         elif action == "save":
-            preview.show_save_result(self._save_image(preview.image))
+            if self._save_image(preview.image):
+                preview.close()
 
     def _edit_capture_preview(self, preview: CapturePreviewWindow) -> None:
         """从预览按需回到全功能标注,而不重新截屏。"""

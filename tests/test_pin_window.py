@@ -73,6 +73,39 @@ def test_capture_preview_has_minimize_and_double_click_primary_action(qapplicati
     preview.close()
 
 
+def test_capture_preview_zoom_keeps_window_geometry_fixed(qapplication):
+    from PySide6.QtCore import QPointF
+
+    preview = CapturePreviewWindow(
+        make_image(800, 500), QSize(800, 500), QPoint(120, 80), "copy"
+    )
+    original_pos = preview.pos()
+    original_size = preview.size()
+
+    preview.set_zoom(2.0, QPointF(400, 250))
+
+    assert preview.zoom == 2.0
+    assert preview.pos() == original_pos
+    assert preview.size() == original_size
+    preview.close()
+
+
+def test_preview_primary_action_closes_after_copy(qapplication):
+    from simple_screenshot.app import AppController
+
+    preview = CapturePreviewWindow(
+        make_image(), QSize(100, 60), QPoint(0, 0), "copy"
+    )
+    controller = object.__new__(AppController)
+    controller.pin_windows = [preview]
+    preview.closed.connect(controller._pin_closed)
+
+    AppController._complete_preview_action(controller, preview, "copy")
+    qapplication.processEvents()
+
+    assert preview not in controller.pin_windows
+
+
 def test_ctrl_c_copies_image_to_clipboard(qapplication):
     pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
 
