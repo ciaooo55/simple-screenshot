@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
-from . import ocr
+from . import __version__, ocr
 from .capture import CapturedDesktop, CaptureOverlay, capture_virtual_desktop
 from .capture_session import CaptureSessionWindow
 from .config import AppSettings, SettingsStore, default_settings
@@ -56,6 +56,8 @@ from .startup import set_start_with_windows
 
 
 APP_TITLE = "简易截图工具"
+PROJECT_URL = "https://github.com/ciaooo55/simple-screenshot"
+AUTHOR = "ciaooo55"
 
 
 class _OcrWorker(QObject):
@@ -186,6 +188,7 @@ class AppController:
         settings_action = QAction("设置…", menu)
         self.startup_action = QAction("开机启动", menu)
         self.startup_action.setCheckable(True)
+        about_action = QAction("关于", menu)
         exit_action = QAction("退出", menu)
 
         copy_action.triggered.connect(lambda: self.request_capture("copy"))
@@ -201,6 +204,7 @@ class AppController:
         folder_action.triggered.connect(self.open_save_directory)
         settings_action.triggered.connect(self.show_settings)
         self.startup_action.triggered.connect(self._toggle_startup)
+        about_action.triggered.connect(self.show_about)
         exit_action.triggered.connect(self.quit)
 
         menu.addAction(copy_action)
@@ -215,6 +219,8 @@ class AppController:
         menu.addAction(folder_action)
         menu.addAction(settings_action)
         menu.addAction(self.startup_action)
+        menu.addSeparator()
+        menu.addAction(about_action)
         menu.addSeparator()
         menu.addAction(exit_action)
         menu.aboutToShow.connect(self._sync_tray_menu)
@@ -397,6 +403,16 @@ class AppController:
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    def show_about(self) -> None:
+        QMessageBox.about(
+            None,
+            f"关于 {APP_TITLE}",
+            f"{APP_TITLE}\n\n"
+            f"版本：v{__version__}\n"
+            f"项目地址：{PROJECT_URL}\n"
+            f"作者：{AUTHOR}",
+        )
 
     def _restore_hidden_pins(self) -> None:
         hidden = self._pins_hidden_for_capture
