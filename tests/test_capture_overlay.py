@@ -111,20 +111,45 @@ def test_finish_emits_selected_image_action_and_position(qapplication):
     assert results[0][2].y() == 20
 
 
-def test_quick_preview_emits_preview_action_when_selection_finishes(qapplication):
+def test_quick_session_emits_session_request_when_selection_finishes(qapplication):
     image = QImage(320, 200, QImage.Format.Format_ARGB32)
     image.fill(QColor("white"))
     desktop = CapturedDesktop(image, QRect(0, 0, 320, 200), 1.0)
     overlay = CaptureOverlay(desktop, "save", quick_preview=True)
-    results: list[tuple[str, QImage]] = []
-    overlay.completed.connect(lambda image, action, pos: results.append((action, image)))
+    results: list[tuple[QImage, CapturedDesktop, QRectF, str]] = []
+    overlay.session_requested.connect(
+        lambda image, source, selection, action: results.append(
+            (image, source, selection, action)
+        )
+    )
 
     drag(overlay, QPointF(10, 20), QPointF(90, 70))
     qapplication.processEvents()
 
     assert len(results) == 1
-    assert results[0][0] == "preview:save"
-    assert results[0][1].size() == QSize(80, 50)
+    assert results[0][3] == "save"
+    assert results[0][0].size() == QSize(80, 50)
+    assert results[0][1] is desktop
+    assert results[0][2] == QRectF(10, 20, 80, 50)
+
+
+def test_quick_pin_finishes_directly_without_opening_a_session(qapplication):
+    image = QImage(320, 200, QImage.Format.Format_ARGB32)
+    image.fill(QColor("white"))
+    desktop = CapturedDesktop(image, QRect(0, 0, 320, 200), 1.0)
+    overlay = CaptureOverlay(desktop, "pin", quick_preview=True)
+    completed: list[str] = []
+    sessions: list[str] = []
+    overlay.completed.connect(lambda image, action, pos: completed.append(action))
+    overlay.session_requested.connect(
+        lambda image, source, selection, action: sessions.append(action)
+    )
+
+    drag(overlay, QPointF(10, 20), QPointF(90, 70))
+    qapplication.processEvents()
+
+    assert completed == ["pin"]
+    assert sessions == []
 
 
 def test_double_click_finishes_with_default_action(qapplication):

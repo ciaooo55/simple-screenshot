@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent
 
-from simple_screenshot.pin_window import CapturePreviewWindow, PinWindow
+from simple_screenshot.pin_window import PinWindow
 from simple_screenshot.ocr import OcrOutcome, OcrSpan
 
 
@@ -51,102 +51,6 @@ def test_escape_closes_and_emits_closed(qapplication):
     qapplication.processEvents()
 
     assert closed == [pin]
-
-
-def test_capture_preview_has_minimize_and_double_click_primary_action(qapplication):
-    preview = CapturePreviewWindow(
-        make_image(), QSize(100, 60), QPoint(0, 0), "save"
-    )
-    actions: list[str] = []
-    preview.primary_requested.connect(actions.append)
-
-    preview.mouseDoubleClickEvent(
-        type("Event", (), {"button": lambda self: Qt.MouseButton.LeftButton,
-                             "accept": lambda self: None})()  # type: ignore[arg-type]
-    )
-
-    assert actions == ["save"]
-    assert bool(
-        preview.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
-    )
-    assert "双击保存" in preview.windowTitle()
-    preview.close()
-
-
-def test_capture_preview_zoom_keeps_window_geometry_fixed(qapplication):
-    from PySide6.QtCore import QPointF
-
-    preview = CapturePreviewWindow(
-        make_image(800, 500), QSize(800, 500), QPoint(120, 80), "copy"
-    )
-    original_pos = preview.pos()
-    original_size = preview.size()
-
-    preview.set_zoom(2.0, QPointF(400, 250))
-
-    assert preview.zoom == 2.0
-    assert preview.pos() == original_pos
-    assert preview.size() == original_size
-    preview.close()
-
-
-def test_preview_primary_action_closes_after_copy(qapplication):
-    from simple_screenshot.app import AppController
-
-    preview = CapturePreviewWindow(
-        make_image(), QSize(100, 60), QPoint(0, 0), "copy"
-    )
-    controller = object.__new__(AppController)
-    controller.pin_windows = [preview]
-    preview.closed.connect(controller._pin_closed)
-
-    AppController._complete_preview_action(controller, preview, "copy")
-    qapplication.processEvents()
-
-    assert preview not in controller.pin_windows
-
-
-def test_preview_hides_quick_pen_while_ocr_is_active(qapplication):
-    preview = CapturePreviewWindow(
-        make_image(), QSize(100, 60), QPoint(0, 0), "copy"
-    )
-
-    preview.request_ocr()
-
-    assert preview._ocr_toolbar_hidden
-    assert preview._preview_toolbar.isHidden()
-
-    preview.set_ocr_result(
-        OcrOutcome("A", 1, (OcrSpan("A", 0, 0, 5, 5, 20, 20),))
-    )
-    assert preview._ocr_outcome is not None
-    assert preview._preview_toolbar.isHidden()
-
-    preview._exit_ocr_mode()
-    assert not preview._ocr_toolbar_hidden
-    assert not preview._preview_toolbar.isHidden()
-    preview.close()
-
-
-def test_quick_pen_opens_annotation_editor_without_closing_app(qapplication):
-    from simple_screenshot.app import AppController
-
-    preview = CapturePreviewWindow(
-        make_image(), QSize(100, 60), QPoint(40, 30), "copy"
-    )
-    controller = object.__new__(AppController)
-    controller.overlay = None
-    controller.pin_windows = [preview]
-    preview.closed.connect(controller._pin_closed)
-
-    AppController._edit_capture_preview(controller, preview)
-
-    assert controller.overlay is not None
-    assert controller.overlay.state == "editing"
-    assert controller.overlay._current_tool() == "pen"
-    assert preview not in controller.pin_windows
-    controller.overlay._resolved = True
-    controller.overlay.close()
 
 
 def test_ctrl_c_copies_image_to_clipboard(qapplication):

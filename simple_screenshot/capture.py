@@ -185,6 +185,7 @@ def _color_swatch(color: str) -> QIcon:
 
 class CaptureOverlay(QWidget):
     completed = Signal(object, str, object)
+    session_requested = Signal(object, object, object, str)
     # OCR 专用的干净渲染(剔除覆盖物、保留马赛克);completed 仍携带
     # 完整标注图,托盘"保存最近一张"的语义不受影响。
     ocr_ready = Signal(object)
@@ -1781,13 +1782,12 @@ class CaptureOverlay(QWidget):
         if resolved_action == "ocr":
             self.request_ocr()
             return
-        preview_actions = {"preview:copy", "preview:save", "preview:pin"}
         if resolved_action not in {
             "copy",
             "save",
             "pin",
             "save_as",
-        } | preview_actions:
+        }:
             return
         self._commit_inline_text()
         image = render_selection(
@@ -2086,9 +2086,10 @@ class CaptureOverlay(QWidget):
 
     def _accept_selection(self) -> None:
         if self._quick_preview:
-            # 主要路径只停在框选:松开鼠标立即得到可缩放、可最小化的图片
-            # 预览。画笔等功能由预览右键中的"标注编辑"按需进入。
-            self.finish(f"preview:{self.action}")
+            if self.action == "pin":
+                self.finish("pin")
+            else:
+                self._start_session()
             return
         self.state = "editing"
         # 框选一确定就能直接涂画:默认切到画笔。重选区回来时保留用户
@@ -2101,6 +2102,30 @@ class CaptureOverlay(QWidget):
         self._sync_annotation_actions()
         self._update_cursor()
         self.update()
+
+    def _start_session(self) -> None:
+        """把已框选截图交给普通任务栏会话窗口,保留原桌面用于重选。"""
+        if self._resolved or self.selection.isEmpty():
+            return
+        image = render_selection(
+            self.desktop.image,
+            self.selection,
+            self.desktop.render_scale,
+            self.annotations,
+        )
+        if image.isNull():
+            return
+        image.setDevicePixelRatio(self.desktop.render_scale)
+        self._resolved = True
+        self.releaseKeyboard()
+        self.hide()
+        self.session_requested.emit(
+            image,
+            self.desktop,
+            QRectF(self.selection),
+            self.action,
+        )
+        self.close()
 
     def _window_target_at(self, point: QPointF) -> WindowTarget | None:
         for target in self._window_targets:
