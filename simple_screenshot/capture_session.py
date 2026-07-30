@@ -477,7 +477,19 @@ class CaptureSessionWindow(QWidget):
             self.request_ocr()
             event.accept()
             return
+        if not event.modifiers() and event.key() == Qt.Key.Key_Escape:
+            self._handle_right_click()
+            event.accept()
+            return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.key() == Qt.Key.Key_Z:
+                if self._active_path is not None:
+                    self._discard_active_path()
+                    self._canvas.update()
+                else:
+                    self._undo()
+                event.accept()
+                return
             if event.key() == Qt.Key.Key_C:
                 self._complete("copy")
                 event.accept()

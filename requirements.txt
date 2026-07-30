@@ -1,13 +1,12 @@
 PySide6>=6.8,<7
 pyinstaller>=6.0,<7
 pytest>=8,<10
-# 高精度识别引擎(内置 PaddleOCR 模型,微信同类技术;
-# onnxruntime-directml 让识别自动走 GPU,CPU 兜底)。
-# 注意:rapidocr_onnxruntime 硬依赖 CPU 版 onnxruntime,与 DirectML 版
-# 同名冲突,必须单独执行:
+# 高精度识别引擎(内置 PaddleOCR 模型,微信同类技术)。默认使用
+# CPU 版 onnxruntime，避开部分显卡驱动的 DirectML 原生崩溃。
+# rapidocr_onnxruntime 由 CI 单独 --no-deps 安装，避免依赖解析改写版本:
 #   python -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
 # 这里只声明它的其余依赖,CI 已按此两步安装。
-onnxruntime-directml>=1.20,<2; sys_platform == "win32"
+onnxruntime>=1.20,<2; sys_platform == "win32"
 numpy>=1.24,<3; sys_platform == "win32"
 opencv-python>=4.8; sys_platform == "win32"
 Pillow>=10; sys_platform == "win32"

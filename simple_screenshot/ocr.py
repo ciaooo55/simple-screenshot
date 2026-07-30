@@ -1,8 +1,8 @@
 """文字识别:内置高精度引擎为主,系统引擎兜底。
 
 主引擎是 RapidOCR(PaddleOCR 模型 + onnxruntime,与微信同类技术):
-模型内置在包里、完全离线,onnxruntime-directml 让它自动走 GPU,
-实测 0.6-0.8 秒/张、11px 小字准确率 96%(系统引擎同场景 82%)。
+模型内置在包里、完全离线。默认使用 CPU 推理，避免部分显卡驱动的
+DirectML 原生崩溃；识别仍在独立进程运行，不阻塞截图界面。
 主引擎不可用(包缺失/初始化失败)时回退 Windows.Media.Ocr。
 
 重依赖(numpy/cv2/onnxruntime/winrt)全部函数内导入,不拖慢启动;
@@ -95,9 +95,9 @@ def _rapid_available() -> bool:
 def _get_rapid_engine():  # type: ignore[no-untyped-def]
     """懒加载并常驻内置引擎;初始化失败只试一次,之后走系统引擎。
 
-    加锁:预热线程与首次按 W 的识别线程可能同时进来。
-    use_dml 三连必须显式打开(包默认全 false,装了 DirectML 版
-    onnxruntime 也不会自己用);无 DX12 环境引擎自动降级 CPU。
+    加锁:并发探测与首次按 W 的识别线程可能同时进来。
+    这里显式禁用 DirectML：Windows 错误报告已确认部分 NVIDIA
+    驱动会在 nvwgf2umx.dll 内原生崩溃，Python 无法捕获。
     """
     global _rapid_engine, _rapid_failed, _availability
     if _rapid_engine is not None or _rapid_failed:
@@ -109,9 +109,9 @@ def _get_rapid_engine():  # type: ignore[no-untyped-def]
             from rapidocr_onnxruntime import RapidOCR
 
             _rapid_engine = RapidOCR(
-                det_use_dml=True,
-                cls_use_dml=True,
-                rec_use_dml=True,
+                det_use_dml=False,
+                cls_use_dml=False,
+                rec_use_dml=False,
                 max_side_len=_RAPID_MAX_SIDE,
             )
         except Exception:

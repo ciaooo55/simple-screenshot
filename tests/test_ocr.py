@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
@@ -135,6 +137,32 @@ def test_rapid_failure_falls_back_to_windows(qapplication, monkeypatch):
 def test_rapid_availability_probe_is_lightweight():
     # 只探测包是否存在,不应触发引擎初始化。
     assert isinstance(ocr._rapid_available(), bool)
+
+
+def test_rapid_engine_explicitly_uses_stable_cpu_provider(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class FakeRapidOCR:
+        def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            calls.append(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr_onnxruntime",
+        SimpleNamespace(RapidOCR=FakeRapidOCR),
+    )
+    monkeypatch.setattr(ocr, "_rapid_engine", None)
+    monkeypatch.setattr(ocr, "_rapid_failed", False)
+
+    assert ocr._get_rapid_engine() is not None
+    assert calls == [
+        {
+            "det_use_dml": False,
+            "cls_use_dml": False,
+            "rec_use_dml": False,
+            "max_side_len": ocr._RAPID_MAX_SIDE,
+        }
+    ]
 
 
 def test_character_boxes_map_back_to_original_pixels():

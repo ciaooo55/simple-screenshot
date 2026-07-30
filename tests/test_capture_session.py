@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPointF, QSize, Qt
-from PySide6.QtGui import QColor, QImage, QMouseEvent
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from simple_screenshot.capture_session import CaptureSessionWindow
@@ -145,6 +145,36 @@ def test_right_click_undo_then_requests_reselect(qapplication):
     assert reselects == []
 
     session.mousePressEvent(MouseEventStub(start, Qt.MouseButton.RightButton))  # type: ignore[arg-type]
+    assert reselects == [True]
+    session.close()
+
+
+def test_escape_and_ctrl_z_follow_the_same_undo_hierarchy(qapplication):
+    session = make_session()
+    start = session._image_rect().center()
+    end = QPointF(start.x() + QApplication.startDragDistance() + 20, start.y() + 10)
+    reselects: list[bool] = []
+    session.reselect_requested.connect(lambda: reselects.append(True))
+
+    session.mousePressEvent(MouseEventStub(start))  # type: ignore[arg-type]
+    session.mouseMoveEvent(MouseEventStub(end))  # type: ignore[arg-type]
+    session.mouseReleaseEvent(MouseEventStub(end))  # type: ignore[arg-type]
+    session.keyPressEvent(
+        QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Z,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+    )
+    assert session.annotations == []
+
+    session.keyPressEvent(
+        QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Escape,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
     assert reselects == [True]
     session.close()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import multiprocessing
 import os
 import subprocess
@@ -43,6 +44,7 @@ from . import __version__, ocr
 from .capture import CapturedDesktop, CaptureOverlay, capture_virtual_desktop
 from .capture_session import CaptureSessionWindow
 from .config import AppSettings, SettingsStore, default_settings
+from .diagnostics import configure_diagnostics
 from .hotkeys import Hotkey, HotkeyManager, parse_hotkey
 from .output import (
     cleanup_stale_drag_copies,
@@ -52,12 +54,13 @@ from .output import (
 from .pin_window import PinWindow
 from .settings_dialog import SettingsDialog
 from .single_instance import SingleInstance
-from .startup import set_start_with_windows
+from .startup import is_start_with_windows_enabled, set_start_with_windows
 
 
 APP_TITLE = "简易截图工具"
 PROJECT_URL = "https://github.com/ciaooo55/simple-screenshot"
 AUTHOR = "ciaooo55"
+logger = logging.getLogger(__name__)
 
 
 class _OcrWorker(QObject):
@@ -65,7 +68,25 @@ class _OcrWorker(QObject):
 
     finished = Signal(object)
     failed = Signal(str)
-    prewarmed = Signal(bool)
+
+
+class ResilientApplication(QApplication):
+    """Keep a Python UI exception from terminating the tray process silently."""
+
+    ui_error = Signal(str)
+
+    def notify(self, receiver, event) -> bool:  # type: ignore[no-untyped-def]
+        try:
+            return super().notify(receiver, event)
+        except Exception:
+            logger.exception("界面事件处理失败，已拦截并继续运行")
+            QTimer.singleShot(
+                0,
+                lambda: self.ui_error.emit(
+                    "操作没有完成，但程序已继续运行；诊断信息已写入 app.log。"
+                ),
+            )
+            return False
 
 
 def bundled_resource(relative_path: str) -> Path:
@@ -122,8 +143,6 @@ class AppController:
         self._pins_hidden_for_capture: list[PinWindow] = []
         self._ocr_busy = False
         self._ocr_worker: _OcrWorker | None = None
-        self._ocr_events = _OcrWorker()
-        self._ocr_events.prewarmed.connect(self._on_ocr_prewarmed)
         self._ocr_target: CaptureOverlay | PinWindow | CaptureSessionWindow | None = None
         self._ocr_executor: ProcessPoolExecutor | None = None
         self._ocr_process_ready = False
@@ -153,6 +172,10 @@ class AppController:
         self.tray.activated.connect(self._tray_activated)
         self.tray.messageClicked.connect(self._notification_clicked)
         self.tray.show()
+        if isinstance(self.app, ResilientApplication):
+            self.app.ui_error.connect(
+                lambda message: self.notify("操作出现异常", message, warning=True)
+            )
         # 单击托盘立即截图;双击打开设置。两者靠双击间隔计时器区分。
         self._tray_click_timer = QTimer(self.app)
         self._tray_click_timer.setSingleShot(True)
@@ -169,9 +192,8 @@ class AppController:
 
         self._activate_initial_settings()
         QTimer.singleShot(650, self._show_startup_notice)
-        # OCR 运行在独立进程:原生推理 DLL/显卡驱动崩溃不会带崩截图主程序。
-        # 启动后空闲时预热子进程,首次按 W 不承担模型加载成本。
-        QTimer.singleShot(1500, self._prewarm_ocr_process)
+        # OCR 只在用户明确按 W 后启动隔离进程。避免登录 Windows 时
+        # 无缘无故加载数百 MB 模型，也避开显卡驱动的启动期原生崩溃。
         self.app.aboutToQuit.connect(self.close)
 
     def _create_tray_menu(self) -> QMenu:
@@ -227,6 +249,14 @@ class AppController:
         return menu
 
     def _sync_tray_menu(self) -> None:
+        actual_startup = is_start_with_windows_enabled()
+        if actual_startup != self.settings.start_with_windows:
+            self.settings = self.settings.updated(start_with_windows=actual_startup)
+            try:
+                self.store.save(self.settings)
+            except OSError:
+                pass
+            self._sync_tray_state()
         self.save_last_action.setEnabled(self._last_image is not None)
         self.close_pins_action.setEnabled(bool(self.pin_windows))
         self.unlock_pins_action.setEnabled(
@@ -542,29 +572,6 @@ class AppController:
             return
         self._reset_ocr_executor()
 
-    def _prewarm_ocr_process(self) -> None:
-        try:
-            future = self._ensure_ocr_executor().submit(ocr.warmup)
-            future.add_done_callback(self._ocr_prewarm_done)
-        except Exception:
-            self._reset_ocr_executor()
-
-    def _ocr_prewarm_done(self, future: Future) -> None:
-        try:
-            future.result()
-        except Exception:
-            self._ocr_events.prewarmed.emit(False)
-        else:
-            self._ocr_events.prewarmed.emit(True)
-
-    def _on_ocr_prewarmed(self, success: bool) -> None:
-        if success:
-            self._ocr_process_ready = True
-            self._ocr_idle_timer.start()
-        else:
-            # 下次真正识别时重建;预热失败不打扰用户。
-            self._reset_ocr_executor()
-
     @staticmethod
     def _image_png_bytes(image: QImage) -> bytes:
         data = QByteArray()
@@ -590,6 +597,7 @@ class AppController:
         if self._ocr_busy:
             if target is not None:
                 target.set_ocr_error("已有识别任务正在运行,请稍后重试")
+                self.notify("正在识别中", "已有识别任务正在运行，请稍后再试。")
                 return
             self.notify(
                 "正在识别中",
@@ -641,12 +649,15 @@ class AppController:
         self._finish_ocr_request()
         if target is not None and target is self.overlay:
             target.set_ocr_error(message)
+            self.notify("识别失败", message, warning=True)
             return
         if isinstance(target, PinWindow) and target in self.pin_windows:
             target.set_ocr_error(message)
+            self.notify("识别失败", message, warning=True)
             return
         if isinstance(target, CaptureSessionWindow) and target in self.capture_sessions:
             target.set_ocr_error(message)
+            self.notify("识别失败", message, warning=True)
             return
         self.notify("识别失败", message, warning=True)
 
@@ -665,6 +676,12 @@ class AppController:
                 and target in self.capture_sessions
             ):
                 target.set_ocr_result(outcome)
+            if not outcome.text:
+                self.notify(
+                    "未识别到文字",
+                    "图片里没有可识别的文字内容；可以放大图片后再试。",
+                    warning=True,
+                )
             return
         if not outcome.text:
             self.notify(
@@ -948,6 +965,7 @@ class AppController:
 
 
 def run() -> int:
+    configure_diagnostics()
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
             "SimpleScreenshot.1"
@@ -955,7 +973,7 @@ def run() -> int:
     except (AttributeError, OSError):
         pass
 
-    app = QApplication(sys.argv)
+    app = ResilientApplication(sys.argv)
     app.setApplicationName("SimpleScreenshot")
     app.setApplicationDisplayName(APP_TITLE)
     app.setOrganizationName("SimpleScreenshot")
