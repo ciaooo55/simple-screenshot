@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -627,6 +628,13 @@ class AppController:
         def done(completed: Future) -> None:
             try:
                 outcome = completed.result()
+            except BrokenProcessPool:
+                # 原生库崩溃无法由 Python 捕获；熔断本次会话里的 RapidOCR，
+                # 下一次识别自动走 Windows OCR，避免用户连续触发同一崩溃。
+                os.environ[ocr.SAFE_MODE_ENV] = "1"
+                worker.failed.emit(
+                    "内置识别进程异常退出，已自动切换系统安全模式，请重试。"
+                )
             except Exception as exc:
                 worker.failed.emit(
                     str(exc) or "识别进程异常退出,请重试"

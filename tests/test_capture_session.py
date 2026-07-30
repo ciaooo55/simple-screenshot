@@ -37,9 +37,15 @@ def test_session_is_regular_taskbar_window(qapplication):
     ) == Qt.WindowType.Window
     assert not bool(session.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
     assert bool(session.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint)
+    assert bool(session.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint)
     assert session._zoom > 0
     assert session._image_rect().width() > 0
     assert session._image_rect().height() > 0
+    target = session._image_rect()
+    assert target.left() <= 13
+    assert target.top() <= 13
+    assert session._canvas.width() - target.right() <= 13
+    assert session._canvas.height() - target.bottom() <= 13
     session.close()
 
 

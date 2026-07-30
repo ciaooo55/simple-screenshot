@@ -12,8 +12,11 @@ DirectML 原生崩溃；识别仍在独立进程运行，不阻塞截图界面�
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import math
+import os
+import sys
 import threading
 from dataclasses import dataclass
 
@@ -30,6 +33,7 @@ _rapid_lock = threading.Lock()
 # 引擎内部超过 Global.max_side_len 会整图降采样;默认 2000 会把 4K
 # 全屏压掉一半、小字直接不可识别。8192 覆盖双 4K 虚拟桌面(7680px)。
 _RAPID_MAX_SIDE = 8192
+SAFE_MODE_ENV = "SIMPLESCREENSHOT_OCR_SAFE_MODE"
 
 
 @dataclass(slots=True)
@@ -87,6 +91,8 @@ def _append_text_spans(
 
 def _rapid_available() -> bool:
     """内置引擎的包是否存在(不真正初始化,保持轻量)。"""
+    if os.environ.get(SAFE_MODE_ENV) == "1":
+        return False
     import importlib.util
 
     return importlib.util.find_spec("rapidocr_onnxruntime") is not None
@@ -100,6 +106,8 @@ def _get_rapid_engine():  # type: ignore[no-untyped-def]
     驱动会在 nvwgf2umx.dll 内原生崩溃，Python 无法捕获。
     """
     global _rapid_engine, _rapid_failed, _availability
+    if os.environ.get(SAFE_MODE_ENV) == "1":
+        return None
     if _rapid_engine is not None or _rapid_failed:
         return _rapid_engine
     with _rapid_lock:
@@ -317,6 +325,13 @@ def recognize_image(image: QImage) -> OcrOutcome:
 
 def recognize_png_bytes(payload: bytes) -> OcrOutcome:
     """Process-safe entry point used by the isolated OCR worker."""
+    if sys.platform == "win32":
+        try:
+            # 原生 OCR/DLL 即使异常退出也不在桌面弹 Windows 崩溃框；
+            # 主进程会捕获 BrokenProcessPool、通知用户并切换安全模式。
+            ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
+        except (AttributeError, OSError):
+            pass
     image = QImage.fromData(payload, "PNG")
     if image.isNull():
         raise RuntimeError("无法读取待识别图片")

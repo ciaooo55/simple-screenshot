@@ -165,6 +165,15 @@ def test_rapid_engine_explicitly_uses_stable_cpu_provider(monkeypatch):
     ]
 
 
+def test_ocr_safe_mode_skips_native_rapid_engine(monkeypatch):
+    monkeypatch.setenv(ocr.SAFE_MODE_ENV, "1")
+    monkeypatch.setattr(ocr, "_rapid_engine", None)
+    monkeypatch.setattr(ocr, "_rapid_failed", False)
+
+    assert not ocr._rapid_available()
+    assert ocr._get_rapid_engine() is None
+
+
 def test_character_boxes_map_back_to_original_pixels():
     spans: list[ocr.OcrSpan] = []
     ocr._append_text_spans(

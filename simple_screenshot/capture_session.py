@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
@@ -81,8 +79,8 @@ class CaptureSessionWindow(QWidget):
         self._dblclick_candidate = False
         self._zoom = 1.0
         self._min_zoom = MIN_ZOOM
-        self._toolbar_height = 42
-        self._canvas_margin = 28.0
+        self._toolbar_height = 40
+        self._canvas_margin = 12.0
         self._ocr_loading = False
         self._ocr_outcome: OcrOutcome | None = None
         self._ocr_anchor: int | None = None
@@ -96,6 +94,7 @@ class CaptureSessionWindow(QWidget):
             Qt.WindowType.Window
             | Qt.WindowType.WindowSystemMenuHint
             | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
             | Qt.WindowType.WindowCloseButtonHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -112,11 +111,11 @@ class CaptureSessionWindow(QWidget):
     def _create_toolbar(self) -> QFrame:
         toolbar = QFrame(self)
         toolbar.setStyleSheet(
-            "QFrame { background: #fafafa; border-bottom: 1px solid #dcdcdc; } "
-            "QToolButton { color: #3f3f3f; border: 0; border-radius: 4px; "
-            "padding: 4px 10px; min-width: 42px; } "
-            "QToolButton:hover { background: #e9e9e9; } "
-            "QToolButton:checked { background: #dcecff; color: #1266c5; }"
+            "QFrame { background: #ffffff; border-bottom: 1px solid #d8dde5; } "
+            "QToolButton { color: #30343b; border: 0; border-radius: 4px; "
+            "padding: 3px 9px; min-width: 40px; } "
+            "QToolButton:hover { background: #edf1f6; } "
+            "QToolButton:checked { background: #dbeafe; color: #0f5fbf; }"
         )
         layout = QHBoxLayout(toolbar)
         layout.setContentsMargins(10, 5, 10, 5)
@@ -143,12 +142,29 @@ class CaptureSessionWindow(QWidget):
     def _configure_viewport(self) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else self.rect()
-        width = min(max(420, self._base_size.width() + 56), round(available.width() * 0.72))
-        height = min(
-            max(320, self._base_size.height() + 56 + self._toolbar_height),
-            round(available.height() * 0.72),
+        margin = self._canvas_margin
+        toolbar_width = max(360, self._toolbar.sizeHint().width())
+        max_window_width = max(toolbar_width, round(available.width() * 0.86))
+        max_window_height = max(180, round(available.height() * 0.84))
+        max_image_width = max(1.0, max_window_width - margin * 2)
+        max_image_height = max(
+            1.0,
+            max_window_height - self._toolbar_height - margin * 2,
         )
-        self.resize(max(1, width), max(1, height))
+        fit = min(
+            1.0,
+            max_image_width / max(1.0, self._base_size.width()),
+            max_image_height / max(1.0, self._base_size.height()),
+        )
+        image_width = max(1, round(self._base_size.width() * fit))
+        image_height = max(1, round(self._base_size.height() * fit))
+        width = max(toolbar_width, image_width + round(margin * 2))
+        height = max(
+            180,
+            image_height + self._toolbar_height + round(margin * 2),
+        )
+        self.setMinimumSize(min(360, width), min(180, height))
+        self.resize(width, height)
         # QWidget 首次隐藏创建时不会把子控件标记为 visible；显式布局后
         # 再计算缩放，避免空画布导出负缩放值，导致图片无法命中鼠标事件。
         self._layout_children()
@@ -158,11 +174,7 @@ class CaptureSessionWindow(QWidget):
             canvas.width() / max(1.0, self._base_size.width()),
             canvas.height() / max(1.0, self._base_size.height()),
         )
-        self._zoom = min(
-            1.0,
-            canvas.width() / max(1.0, self._base_size.width()),
-            canvas.height() / max(1.0, self._base_size.height()),
-        )
+        self._zoom = fit
 
     def _activate_pen(self) -> None:
         """画笔是默认工具；按钮用于把焦点明确还给绘制画布。"""
@@ -324,11 +336,11 @@ class CaptureSessionWindow(QWidget):
         self._canvas.update()
 
     def _paint_canvas(self, painter: QPainter) -> None:
-        painter.fillRect(self._canvas.rect(), QColor("#f5f5f5"))
+        painter.fillRect(self._canvas.rect(), QColor("#e9edf2"))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         target = self._image_rect()
         painter.drawImage(target, self._image)
-        painter.setPen(QPen(QColor("#d6d6d6"), 1.0))
+        painter.setPen(QPen(QColor("#aeb7c2"), 1.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(target.adjusted(0.5, 0.5, -0.5, -0.5))
         if self._ocr_outcome is not None:
