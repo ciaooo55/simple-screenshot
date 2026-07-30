@@ -42,10 +42,10 @@ def test_session_is_regular_taskbar_window(qapplication):
     assert session._image_rect().width() > 0
     assert session._image_rect().height() > 0
     target = session._image_rect()
-    assert target.left() <= 13
-    assert target.top() <= 13
-    assert session._canvas.width() - target.right() <= 13
-    assert session._canvas.height() - target.bottom() <= 13
+    assert target.left() <= 7
+    assert target.top() <= 7
+    assert session._canvas.width() - target.right() <= 7
+    assert session._canvas.height() - target.bottom() <= 7
     session.close()
 
 

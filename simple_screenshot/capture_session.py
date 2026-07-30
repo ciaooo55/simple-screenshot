@@ -79,8 +79,8 @@ class CaptureSessionWindow(QWidget):
         self._dblclick_candidate = False
         self._zoom = 1.0
         self._min_zoom = MIN_ZOOM
-        self._toolbar_height = 40
-        self._canvas_margin = 12.0
+        self._toolbar_height = 34
+        self._canvas_margin = 6.0
         self._ocr_loading = False
         self._ocr_outcome: OcrOutcome | None = None
         self._ocr_anchor: int | None = None
@@ -113,13 +113,13 @@ class CaptureSessionWindow(QWidget):
         toolbar.setStyleSheet(
             "QFrame { background: #ffffff; border-bottom: 1px solid #d8dde5; } "
             "QToolButton { color: #30343b; border: 0; border-radius: 4px; "
-            "padding: 3px 9px; min-width: 40px; } "
+            "padding: 2px 6px; min-width: 36px; } "
             "QToolButton:hover { background: #edf1f6; } "
             "QToolButton:checked { background: #dbeafe; color: #0f5fbf; }"
         )
         layout = QHBoxLayout(toolbar)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(2)
 
         def button(label: str, tooltip: str, callback) -> QToolButton:  # type: ignore[no-untyped-def]
             item = QToolButton(toolbar)
@@ -143,7 +143,7 @@ class CaptureSessionWindow(QWidget):
         screen = self.screen() or QGuiApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else self.rect()
         margin = self._canvas_margin
-        toolbar_width = max(360, self._toolbar.sizeHint().width())
+        toolbar_width = max(300, self._toolbar.sizeHint().width())
         max_window_width = max(toolbar_width, round(available.width() * 0.86))
         max_window_height = max(180, round(available.height() * 0.84))
         max_image_width = max(1.0, max_window_width - margin * 2)
@@ -163,7 +163,7 @@ class CaptureSessionWindow(QWidget):
             180,
             image_height + self._toolbar_height + round(margin * 2),
         )
-        self.setMinimumSize(min(360, width), min(180, height))
+        self.setMinimumSize(min(300, width), min(140, height))
         self.resize(width, height)
         # QWidget 首次隐藏创建时不会把子控件标记为 visible；显式布局后
         # 再计算缩放，避免空画布导出负缩放值，导致图片无法命中鼠标事件。
