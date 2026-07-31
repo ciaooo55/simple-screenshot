@@ -60,6 +60,8 @@ def test_pin_is_frameless_topmost_layer_window(qapplication):
     assert bool(pin.windowFlags() & Qt.WindowType.FramelessWindowHint)
     assert bool(pin.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
     assert bool(pin.windowFlags() & Qt.WindowType.Tool)
+    assert pin.annotation_mode
+    assert pin.cursor().shape() == Qt.CursorShape.CrossCursor
     pin.close()
 
 
@@ -94,7 +96,6 @@ def test_middle_button_drag_moves_pin(qapplication):
 
 def test_pin_annotation_mode_draws_and_preserves_output(qapplication):
     pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
-    pin.set_annotation_mode(True)
     start = QPointF(20, 20)
     end = QPointF(60, 35)
 
@@ -125,6 +126,7 @@ def test_pin_annotation_mode_draws_and_preserves_output(qapplication):
 
     assert pin.annotation_mode
     assert len(pin._annotations) == 1
+    assert pin.pos() == QPoint(0, 0)
     assert pin.image.cacheKey() != pin._image.cacheKey()
     pin.close()
 

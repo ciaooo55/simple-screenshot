@@ -75,7 +75,8 @@ class PinWindow(QWidget):
         self._drag_offset: QPoint | None = None
         self._drag_button = Qt.MouseButton.NoButton
         self._ctrl_drag_origin: QPoint | None = None
-        self._annotation_mode = False
+        # 定住即进入画笔：左键直接标注，中键拖动才移动贴图。
+        self._annotation_mode = True
         self._annotations: list[Annotation] = []
         self._annotation_history: list[list[Annotation]] = []
         self._active_path: QPainterPath | None = None
@@ -109,7 +110,7 @@ class PinWindow(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor)
         self.resize(self._base_size)
         self.move(global_pos)
 
@@ -191,7 +192,7 @@ class PinWindow(QWidget):
 
     def show_pin_hint(self) -> None:
         """新贴图的短提示，避免原位覆盖时看起来像快捷键没生效。"""
-        self._show_hud("已定住 · 中键拖动 · 右键标注")
+        self._show_hud("已定住 · 左键画笔 · 中键拖动")
 
     def set_annotation_mode(self, enabled: bool) -> None:
         if self._ocr_loading or self._ocr_outcome is not None:
@@ -210,6 +211,13 @@ class PinWindow(QWidget):
     def _discard_active_stroke(self) -> None:
         self._active_path = None
         self._pen_dragged = False
+
+    def _idle_cursor(self) -> Qt.CursorShape:
+        return (
+            Qt.CursorShape.CrossCursor
+            if self._annotation_mode
+            else Qt.CursorShape.OpenHandCursor
+        )
 
     def _source_point(self, point: QPointF) -> QPointF:
         return QPointF(
@@ -424,7 +432,7 @@ class PinWindow(QWidget):
         self._set_ocr_input_passthrough(False)
         if not outcome.text or not outcome.spans:
             self._show_hud("未识别到可选择的文字")
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.setCursor(self._idle_cursor())
             return
         self._ocr_outcome = outcome
         self.setCursor(Qt.CursorShape.IBeamCursor)
@@ -435,7 +443,7 @@ class PinWindow(QWidget):
             return
         self._ocr_loading = False
         self._set_ocr_input_passthrough(False)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setCursor(self._idle_cursor())
         self._show_hud(message or "识别失败")
 
     def _exit_ocr_mode(self) -> None:
@@ -446,7 +454,7 @@ class PinWindow(QWidget):
         self._ocr_hover = None
         self._ocr_dragging = False
         self._set_ocr_input_passthrough(self._click_through)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setCursor(self._idle_cursor())
         self.update()
 
     def _set_ocr_input_passthrough(self, enabled: bool) -> None:
@@ -729,17 +737,6 @@ class PinWindow(QWidget):
             self._exit_ocr_mode()
             event.accept()
             return
-        if self._annotation_mode:
-            if self._active_path is not None:
-                self._discard_active_stroke()
-                self.update()
-            elif self._annotation_history:
-                self._annotations = self._annotation_history.pop()
-                self._show_hud("已撤销一笔")
-            else:
-                self.set_annotation_mode(False)
-            event.accept()
-            return
         menu = QMenu(self)
         status = menu.addAction(
             f"缩放 {round(self._zoom * 100)}% · "
@@ -750,7 +747,13 @@ class PinWindow(QWidget):
         copy_action = menu.addAction("复制图片\tCtrl+C")
         save_action = menu.addAction("保存图片\tCtrl+S")
         save_as_action = menu.addAction("另存为…\tCtrl+Shift+S")
-        annotate_action = menu.addAction("画笔标注\tP")
+        undo_action = menu.addAction("撤销一笔")
+        undo_action.setEnabled(bool(self._annotation_history))
+        annotate_action = menu.addAction(
+            "暂停画笔（左键改为移动）\tP"
+            if self._annotation_mode
+            else "开启画笔\tP"
+        )
         ocr_action = menu.addAction("识别文字")
         from .ocr import is_available as ocr_available
 
@@ -771,8 +774,12 @@ class PinWindow(QWidget):
             self.save_requested.emit(self._output_image())
         elif chosen == save_as_action:
             self.save_as_requested.emit(self._output_image())
+        elif chosen == undo_action:
+            self._annotations = self._annotation_history.pop()
+            self._show_hud("已撤销一笔")
+            self.update()
         elif chosen == annotate_action:
-            self.set_annotation_mode(True)
+            self.set_annotation_mode(not self._annotation_mode)
         elif chosen == ocr_action:
             self.request_ocr()
         elif chosen == reset_action:
