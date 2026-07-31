@@ -748,6 +748,7 @@ class AppController:
         self.pin_windows.append(pin)
         pin.show()
         pin.raise_()
+        pin.show_pin_hint()
         # 仅剪贴板来源做适配:截图钉住必须原位 1:1 覆盖,不能缩放。
         if not fit_to_screen:
             return

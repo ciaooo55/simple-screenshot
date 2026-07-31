@@ -4,6 +4,7 @@ from PySide6.QtCore import QEvent, QPointF, QSize, Qt
 from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
+from simple_screenshot.annotations import ArrowAnnotation, ShapeAnnotation
 from simple_screenshot.capture_session import CaptureSessionWindow
 from simple_screenshot.ocr import OcrOutcome, OcrSpan
 
@@ -132,6 +133,36 @@ def test_pen_button_keeps_direct_drawing_enabled(qapplication):
 
     assert session._pen_button.isChecked()
     assert len(session.annotations) == 1
+    session.close()
+
+
+def test_arrow_and_rectangle_tools_are_available_in_same_session(qapplication):
+    session = make_session()
+    start = session._image_rect().center()
+    end = QPointF(start.x() + 60, start.y() + 30)
+
+    session.set_tool("arrow")
+    session.mousePressEvent(MouseEventStub(start))  # type: ignore[arg-type]
+    session.mouseMoveEvent(MouseEventStub(end))  # type: ignore[arg-type]
+    session.mouseReleaseEvent(MouseEventStub(end))  # type: ignore[arg-type]
+
+    session.set_tool("rect")
+    session.mousePressEvent(MouseEventStub(start))  # type: ignore[arg-type]
+    session.mouseMoveEvent(MouseEventStub(end))  # type: ignore[arg-type]
+    session.mouseReleaseEvent(MouseEventStub(end))  # type: ignore[arg-type]
+
+    assert isinstance(session.annotations[0], ArrowAnnotation)
+    assert isinstance(session.annotations[1], ShapeAnnotation)
+    assert session.annotations[1].shape == "rect"
+    session.close()
+
+
+def test_more_menu_tools_remain_available_without_widening_canvas(qapplication):
+    session = make_session()
+
+    for name in ("highlight", "ellipse", "number", "mosaic", "text"):
+        assert name in session._tool_buttons
+    assert session._image_rect().left() <= 7
     session.close()
 
 

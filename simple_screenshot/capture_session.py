@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
@@ -14,9 +16,29 @@ from PySide6.QtGui import (
     QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QToolButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QMenu,
+    QToolButton,
+    QWidget,
+)
 
-from .annotations import Annotation, PenAnnotation, draw_annotations, render_selection
+from .annotations import (
+    Annotation,
+    ArrowAnnotation,
+    MosaicAnnotation,
+    NumberAnnotation,
+    PenAnnotation,
+    ShapeAnnotation,
+    TextAnnotation,
+    draw_annotations,
+    render_selection,
+)
 from .ocr import OcrOutcome, OcrSpan
 
 
@@ -73,6 +95,8 @@ class CaptureSessionWindow(QWidget):
         self.annotations: list[Annotation] = []
         self._history: list[list[Annotation]] = []
         self._active_path: QPainterPath | None = None
+        self._shape_origin: QPointF | None = None
+        self._active_shape: Annotation | None = None
         self._pen_last = QPointF()
         self._press_view_point: QPointF | None = None
         self._pen_dragged = False
@@ -87,6 +111,7 @@ class CaptureSessionWindow(QWidget):
         self._ocr_focus: int | None = None
         self._ocr_dragging = False
         self._closed = False
+        self._tool = "pen"
 
         action_text = "复制" if primary_action == "copy" else "保存"
         self.setWindowTitle(f"截图 - 双击{action_text}")
@@ -113,7 +138,7 @@ class CaptureSessionWindow(QWidget):
         toolbar.setStyleSheet(
             "QFrame { background: #ffffff; border-bottom: 1px solid #d8dde5; } "
             "QToolButton { color: #30343b; border: 0; border-radius: 4px; "
-            "padding: 2px 6px; min-width: 36px; } "
+            "padding: 2px 4px; min-width: 32px; } "
             "QToolButton:hover { background: #edf1f6; } "
             "QToolButton:checked { background: #dbeafe; color: #0f5fbf; }"
         )
@@ -126,15 +151,120 @@ class CaptureSessionWindow(QWidget):
             item.setText(label)
             item.setToolTip(tooltip)
             item.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            item.setFixedWidth(42)
             item.clicked.connect(callback)
             layout.addWidget(item)
             return item
 
         button("复制", "复制并关闭（Ctrl+C）", lambda: self._complete("copy"))
         button("保存", "保存并关闭（Ctrl+S）", lambda: self._complete("save"))
-        self._pen_button = button("画笔", "画笔已启用：在图片上按住左键拖动", self._activate_pen)
-        self._pen_button.setCheckable(True)
+
+        tool_group = QButtonGroup(toolbar)
+        tool_group.setExclusive(True)
+        self._tool_buttons: dict[str, QToolButton] = {}
+
+        def tool(
+            name: str,
+            label: str,
+            tooltip: str,
+            *,
+            visible: bool = True,
+        ) -> QToolButton:
+            if visible:
+                item = button(
+                    label,
+                    tooltip,
+                    lambda _checked=False, selected=name: self.set_tool(selected),
+                )
+            else:
+                item = QToolButton(toolbar)
+                item.setText(label)
+                item.setToolTip(tooltip)
+                item.hide()
+            item.setCheckable(True)
+            tool_group.addButton(item)
+            self._tool_buttons[name] = item
+            return item
+
+        self._pen_button = tool("pen", "画笔", "自由画笔（P）")
+        tool("arrow", "箭头", "拖动绘制箭头（A）")
+        tool("rect", "矩形", "拖动绘制矩形（R）")
+        more_tools = (
+            ("highlight", "荧光", "半透明荧光笔（G）"),
+            ("ellipse", "椭圆", "拖动绘制椭圆（O）"),
+            ("number", "序号", "单击放置序号（N）"),
+            ("mosaic", "马赛克", "拖动遮盖内容（M）"),
+            ("text", "文字", "单击添加文字（T）"),
+        )
+        for name, label, tooltip in more_tools:
+            tool(name, label, tooltip, visible=False)
+        self._more_button = QToolButton(toolbar)
+        self._more_button.setText("更多")
+        self._more_button.setToolTip("荧光、椭圆、序号、马赛克、文字")
+        self._more_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._more_button.setFixedWidth(42)
+        more_menu = QMenu(self._more_button)
+        for name, label, tooltip in more_tools:
+            action = more_menu.addAction(label)
+            action.setToolTip(tooltip)
+            action.triggered.connect(
+                lambda _checked=False, selected=name: self.set_tool(selected)
+            )
+        self._more_button.setMenu(more_menu)
+        self._more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        layout.addWidget(self._more_button)
         self._pen_button.setChecked(True)
+
+        self._color_combo = QComboBox(toolbar)
+        self._color_combo.setToolTip("标注颜色")
+        self._color_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for label, color in (
+            ("红", "#ff3b30"),
+            ("黄", "#ffd60a"),
+            ("绿", "#34c759"),
+            ("蓝", "#0a84ff"),
+            ("白", "#ffffff"),
+            ("黑", "#111111"),
+        ):
+            self._color_combo.addItem(label, color)
+        self._color_combo.setFixedWidth(48)
+        self._color_combo.hide()
+
+        self._width_combo = QComboBox(toolbar)
+        self._width_combo.setToolTip("线条粗细")
+        self._width_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for width in (2, 4, 6, 8):
+            self._width_combo.addItem(str(width), width)
+        self._width_combo.setCurrentIndex(1)
+        self._width_combo.setFixedWidth(42)
+        self._width_combo.hide()
+
+        style_button = QToolButton(toolbar)
+        style_button.setText("样式")
+        style_button.setToolTip("标注颜色和粗细")
+        style_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        style_button.setFixedWidth(42)
+        style_menu = QMenu(style_button)
+        color_menu = style_menu.addMenu("颜色")
+        for index in range(self._color_combo.count()):
+            action = color_menu.addAction(self._color_combo.itemText(index))
+            action.triggered.connect(
+                lambda _checked=False, selected=index: self._color_combo.setCurrentIndex(
+                    selected
+                )
+            )
+        width_menu = style_menu.addMenu("粗细")
+        for index in range(self._width_combo.count()):
+            action = width_menu.addAction(f"{self._width_combo.itemText(index)} px")
+            action.triggered.connect(
+                lambda _checked=False, selected=index: self._width_combo.setCurrentIndex(
+                    selected
+                )
+            )
+        style_button.setMenu(style_menu)
+        style_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        layout.addWidget(style_button)
+
         self._ocr_button = button("识别", "识别文字（W）", self.request_ocr)
         layout.addStretch(1)
         return toolbar
@@ -176,13 +306,46 @@ class CaptureSessionWindow(QWidget):
         )
         self._zoom = fit
 
-    def _activate_pen(self) -> None:
-        """画笔是默认工具；按钮用于把焦点明确还给绘制画布。"""
+    def set_tool(self, name: str) -> None:
+        """切换标注工具；全部工具留在同一个会话窗口内。"""
         if self._ocr_loading or self._ocr_outcome is not None:
             return
-        self._pen_button.setChecked(True)
+        if name not in self._tool_buttons:
+            return
+        self._discard_active_annotation()
+        self._tool = name
+        self._tool_buttons[name].setChecked(True)
+        hidden_labels = {
+            "highlight": "荧光",
+            "ellipse": "椭圆",
+            "number": "序号",
+            "mosaic": "打码",
+            "text": "文字",
+        }
+        self._more_button.setText(hidden_labels.get(name, "更多"))
         self._canvas.setFocus(Qt.FocusReason.MouseFocusReason)
-        self._canvas.setCursor(Qt.CursorShape.CrossCursor)
+        self._canvas.setCursor(
+            Qt.CursorShape.IBeamCursor
+            if name == "text"
+            else Qt.CursorShape.CrossCursor
+        )
+
+    def _activate_pen(self) -> None:
+        self.set_tool("pen")
+
+    def _current_color(self) -> str:
+        return str(self._color_combo.currentData())
+
+    def _current_width(self) -> float:
+        return float(self._width_combo.currentData())
+
+    def _pen_style(self) -> tuple[str, float]:
+        color = QColor(self._current_color())
+        width = self._current_width()
+        if self._tool == "highlight":
+            color.setAlpha(102)
+            width *= 3.0
+        return color.name(QColor.NameFormat.HexArgb), width
 
     def _canvas_rect(self) -> QRectF:
         return QRectF(self._canvas.rect()).adjusted(
@@ -274,16 +437,79 @@ class CaptureSessionWindow(QWidget):
             end += 1
         return start, end
 
-    def _discard_active_path(self) -> None:
+    def _discard_active_annotation(self) -> None:
         self._active_path = None
+        self._shape_origin = None
+        self._active_shape = None
         self._press_view_point = None
         self._pen_dragged = False
         self._dblclick_candidate = False
+
+    # 兼容既有调用与测试名称。
+    def _discard_active_path(self) -> None:
+        self._discard_active_annotation()
 
     def _undo(self) -> None:
         if self._history:
             self.annotations = self._history.pop()
             self._canvas.update()
+
+    def _push_annotation(self, annotation: Annotation) -> None:
+        self._history.append(list(self.annotations))
+        self.annotations.append(annotation)
+        self._canvas.update()
+
+    def _next_number(self) -> int:
+        values = [
+            item.number
+            for item in self.annotations
+            if isinstance(item, NumberAnnotation)
+        ]
+        return max(values, default=0) + 1
+
+    def _build_shape(self, origin: QPointF, point: QPointF) -> Annotation | None:
+        if self._tool == "arrow":
+            if math.hypot(point.x() - origin.x(), point.y() - origin.y()) < 3.0:
+                return None
+            return ArrowAnnotation(
+                QPointF(origin),
+                QPointF(point),
+                self._current_color(),
+                self._current_width(),
+            )
+        rect = QRectF(origin, point).normalized()
+        if rect.width() < 3.0 or rect.height() < 3.0:
+            return None
+        if self._tool == "mosaic":
+            block = min(20.0, max(8.0, min(rect.width(), rect.height()) / 20.0))
+            return MosaicAnnotation(rect, block)
+        if self._tool in {"rect", "ellipse"}:
+            return ShapeAnnotation(
+                rect,
+                self._current_color(),
+                self._current_width(),
+                self._tool,
+            )
+        return None
+
+    def _add_text(self, point: QPointF) -> None:
+        text, accepted = QInputDialog.getMultiLineText(
+            self,
+            "添加文字",
+            "文字内容：",
+        )
+        if not accepted or not text.strip():
+            return
+        width = max(80.0, min(360.0, self._base_size.width() - point.x()))
+        self._push_annotation(
+            TextAnnotation(
+                QPointF(point),
+                text.strip(),
+                self._current_color(),
+                24,
+                width,
+            )
+        )
 
     def _complete(self, action: str) -> None:
         image = render_selection(
@@ -352,8 +578,17 @@ class CaptureSessionWindow(QWidget):
             painter.save()
             painter.translate(target.left(), target.top())
             painter.scale(target.width() / self._base_size.width(), target.height() / self._base_size.height())
-            active = PenAnnotation(self._active_path, "#ff3b30", 4.0) if self._active_path is not None else None
-            draw_annotations(painter, self.annotations, active)
+            active: Annotation | None = self._active_shape
+            if self._active_path is not None:
+                color, width = self._pen_style()
+                active = PenAnnotation(self._active_path, color, width)
+            draw_annotations(
+                painter,
+                self.annotations,
+                active,
+                source=self._image,
+                source_scale=self._source_scale,
+            )
             painter.restore()
     def _layout_children(self) -> None:
         toolbar_visible = not self._ocr_loading and self._ocr_outcome is None
@@ -387,6 +622,22 @@ class CaptureSessionWindow(QWidget):
         if point is None:
             event.accept()
             return
+        if self._tool == "number":
+            self._push_annotation(
+                NumberAnnotation(point, self._next_number(), self._current_color())
+            )
+            event.accept()
+            return
+        if self._tool == "text":
+            self._add_text(point)
+            event.accept()
+            return
+        if self._tool in {"arrow", "rect", "ellipse", "mosaic"}:
+            self._shape_origin = QPointF(point)
+            self._press_view_point = QPointF(event.position())
+            self._pen_dragged = False
+            event.accept()
+            return
         self._active_path = QPainterPath(point)
         self._pen_last = point
         self._press_view_point = QPointF(event.position())
@@ -399,6 +650,16 @@ class CaptureSessionWindow(QWidget):
                 index = self._ocr_index_at(event.position())
                 if index is not None:
                     self._ocr_focus = index
+                self._canvas.update()
+            return
+        if self._shape_origin is not None:
+            point = self._source_point(event.position())
+            if point is not None:
+                self._active_shape = self._build_shape(self._shape_origin, point)
+                if self._press_view_point is not None and (
+                    event.position() - self._press_view_point
+                ).manhattanLength() >= QApplication.startDragDistance():
+                    self._pen_dragged = True
                 self._canvas.update()
             return
         if self._active_path is None or self._press_view_point is None:
@@ -424,19 +685,32 @@ class CaptureSessionWindow(QWidget):
             self._canvas.update()
             event.accept()
             return
+        if self._shape_origin is not None:
+            release = self._source_point(event.position()) or self._shape_origin
+            annotation = self._build_shape(self._shape_origin, release)
+            if self._dblclick_candidate and not self._pen_dragged:
+                self._discard_active_annotation()
+                self._complete(self.primary_action)
+                event.accept()
+                return
+            if annotation is not None:
+                self._push_annotation(annotation)
+            self._discard_active_annotation()
+            event.accept()
+            return
         if self._active_path is None:
             return
         if self._dblclick_candidate and not self._pen_dragged:
-            self._discard_active_path()
+            self._discard_active_annotation()
             self._complete(self.primary_action)
             event.accept()
             return
         if self._pen_dragged:
             point = self._source_point(event.position()) or self._pen_last
             self._active_path.lineTo(point)
-            self._history.append(list(self.annotations))
-            self.annotations.append(PenAnnotation(self._active_path, "#ff3b30", 4.0))
-        self._discard_active_path()
+            color, width = self._pen_style()
+            self._push_annotation(PenAnnotation(self._active_path, color, width))
+        self._discard_active_annotation()
         self._canvas.update()
         event.accept()
 
@@ -450,11 +724,17 @@ class CaptureSessionWindow(QWidget):
                 self._canvas.update()
             event.accept()
             return
-        if self._active_path is None:
+        if self._tool in {"number", "text"}:
+            event.accept()
+            return
+        if self._active_path is None and self._shape_origin is None:
             point = self._source_point(event.position())
             if point is not None:
-                self._active_path = QPainterPath(point)
-                self._pen_last = point
+                if self._tool in {"arrow", "rect", "ellipse", "mosaic"}:
+                    self._shape_origin = QPointF(point)
+                else:
+                    self._active_path = QPainterPath(point)
+                    self._pen_last = point
                 self._press_view_point = QPointF(event.position())
         self._dblclick_candidate = True
         event.accept()
@@ -489,14 +769,30 @@ class CaptureSessionWindow(QWidget):
             self.request_ocr()
             event.accept()
             return
+        if not event.modifiers():
+            shortcuts = {
+                Qt.Key.Key_P: "pen",
+                Qt.Key.Key_G: "highlight",
+                Qt.Key.Key_A: "arrow",
+                Qt.Key.Key_R: "rect",
+                Qt.Key.Key_O: "ellipse",
+                Qt.Key.Key_N: "number",
+                Qt.Key.Key_M: "mosaic",
+                Qt.Key.Key_T: "text",
+            }
+            tool = shortcuts.get(event.key())
+            if tool is not None:
+                self.set_tool(tool)
+                event.accept()
+                return
         if not event.modifiers() and event.key() == Qt.Key.Key_Escape:
             self._handle_right_click()
             event.accept()
             return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             if event.key() == Qt.Key.Key_Z:
-                if self._active_path is not None:
-                    self._discard_active_path()
+                if self._active_path is not None or self._shape_origin is not None:
+                    self._discard_active_annotation()
                     self._canvas.update()
                 else:
                     self._undo()
@@ -515,8 +811,8 @@ class CaptureSessionWindow(QWidget):
     def _handle_right_click(self) -> None:
         if self._ocr_loading or self._ocr_outcome is not None:
             self._exit_ocr_mode()
-        elif self._active_path is not None:
-            self._discard_active_path()
+        elif self._active_path is not None or self._shape_origin is not None:
+            self._discard_active_annotation()
             self._canvas.update()
         elif self.annotations:
             self._undo()

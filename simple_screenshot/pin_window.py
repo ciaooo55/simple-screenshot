@@ -15,12 +15,14 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPaintEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QMenu, QToolButton, QWidget
 
+from .annotations import Annotation, PenAnnotation, draw_annotations, render_selection
 from .ocr import OcrOutcome, OcrSpan
 
 from .output import export_drag_copy
@@ -71,7 +73,15 @@ class PinWindow(QWidget):
         self._min_zoom = min(1.0, max(MIN_ZOOM, MIN_PIN_SIDE / base_short))
         self._zoom = 1.0
         self._drag_offset: QPoint | None = None
+        self._drag_button = Qt.MouseButton.NoButton
         self._ctrl_drag_origin: QPoint | None = None
+        self._annotation_mode = False
+        self._annotations: list[Annotation] = []
+        self._annotation_history: list[list[Annotation]] = []
+        self._active_path: QPainterPath | None = None
+        self._pen_last = QPointF()
+        self._pen_origin = QPointF()
+        self._pen_dragged = False
         self._click_through = False
         self._opacity_before_click_through = 1.0
         self._hud_text: str | None = None
@@ -105,7 +115,28 @@ class PinWindow(QWidget):
 
     @property
     def image(self) -> QImage:
-        return self._image
+        return self._output_image()
+
+    @property
+    def annotation_mode(self) -> bool:
+        return self._annotation_mode
+
+    def _output_image(self) -> QImage:
+        if not self._annotations:
+            return QImage(self._image)
+        result = render_selection(
+            self._image,
+            QRectF(
+                0.0,
+                0.0,
+                float(self._base_size.width()),
+                float(self._base_size.height()),
+            ),
+            max(1.0, float(self._image.devicePixelRatio())),
+            self._annotations,
+        )
+        result.setDevicePixelRatio(self._image.devicePixelRatio())
+        return result
 
     @property
     def zoom(self) -> float:
@@ -155,8 +186,36 @@ class PinWindow(QWidget):
         self._show_hud("100%")
 
     def copy_to_clipboard(self) -> None:
-        QGuiApplication.clipboard().setImage(self._image)
+        QGuiApplication.clipboard().setImage(self._output_image())
         self._show_hud("已复制")
+
+    def show_pin_hint(self) -> None:
+        """新贴图的短提示，避免原位覆盖时看起来像快捷键没生效。"""
+        self._show_hud("已定住 · 中键拖动 · 右键标注")
+
+    def set_annotation_mode(self, enabled: bool) -> None:
+        if self._ocr_loading or self._ocr_outcome is not None:
+            return
+        self._annotation_mode = enabled
+        self._discard_active_stroke()
+        self.setCursor(
+            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.OpenHandCursor
+        )
+        self._show_hud(
+            "画笔已开启 · 左键画 · 右键撤销"
+            if enabled
+            else "已退出画笔"
+        )
+
+    def _discard_active_stroke(self) -> None:
+        self._active_path = None
+        self._pen_dragged = False
+
+    def _source_point(self, point: QPointF) -> QPointF:
+        return QPointF(
+            point.x() * self._base_size.width() / max(1, self.width()),
+            point.y() * self._base_size.height() / max(1, self.height()),
+        )
 
     def show_save_result(self, success: bool) -> None:
         self._show_hud("已保存" if success else "保存失败,详见通知")
@@ -191,17 +250,18 @@ class PinWindow(QWidget):
     def _start_file_drag(self) -> None:
         """Ctrl+拖动:把贴图导出成临时 PNG,拖进聊天窗口/上传框直接当文件用。"""
         try:
-            target = export_drag_copy(self._image)
+            output = self._output_image()
+            target = export_drag_copy(output)
         except Exception:
             self._show_hud("导出失败")
             return
         drag = QDrag(self)
         mime = QMimeData()
-        mime.setImageData(self._image)
+        mime.setImageData(output)
         mime.setUrls([QUrl.fromLocalFile(str(target))])
         drag.setMimeData(mime)
         preview = QPixmap.fromImage(
-            self._image.scaled(
+            output.scaled(
                 96,
                 96,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -236,11 +296,21 @@ class PinWindow(QWidget):
             painter.drawImage(QPointF(0.0, 0.0), self._image)
         else:
             painter.drawImage(QRectF(self.rect()), self._image)
+        if self._annotations or self._active_path is not None:
+            painter.save()
+            painter.scale(
+                self.width() / max(1.0, float(self._base_size.width())),
+                self.height() / max(1.0, float(self._base_size.height())),
+            )
+            active = (
+                PenAnnotation(self._active_path, "#ff3b30", 4.0)
+                if self._active_path is not None
+                else None
+            )
+            draw_annotations(painter, self._annotations, active)
+            painter.restore()
         if self._ocr_loading or self._ocr_outcome is not None:
             self._draw_ocr_layer(painter)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor("#1677ff"), 1.0))
-        painter.drawRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
         if self._hud_text:
             self._draw_hud(painter, self._hud_text)
         painter.end()
@@ -425,6 +495,14 @@ class PinWindow(QWidget):
         return QPoint(x, y)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._drag_offset = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
+            self._drag_button = Qt.MouseButton.MiddleButton
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             if self._ocr_loading:
                 event.accept()
@@ -443,9 +521,18 @@ class PinWindow(QWidget):
                 self._ctrl_drag_origin = event.position().toPoint()
                 event.accept()
                 return
+            if self._annotation_mode:
+                point = self._source_point(event.position())
+                self._active_path = QPainterPath(point)
+                self._pen_last = point
+                self._pen_origin = point
+                self._pen_dragged = False
+                event.accept()
+                return
             self._drag_offset = (
                 event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             )
+            self._drag_button = Qt.MouseButton.LeftButton
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
@@ -473,8 +560,27 @@ class PinWindow(QWidget):
                 self._start_file_drag()
             event.accept()
             return
-        if self._drag_offset is not None and (
+        if self._active_path is not None and (
             event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            point = self._source_point(event.position())
+            midpoint = QPointF(
+                (self._pen_last.x() + point.x()) / 2.0,
+                (self._pen_last.y() + point.y()) / 2.0,
+            )
+            self._active_path.quadTo(self._pen_last, midpoint)
+            self._pen_last = point
+            if (
+                not self._pen_dragged
+                and (point - self._pen_origin).manhattanLength()
+                >= QApplication.startDragDistance()
+            ):
+                self._pen_dragged = True
+            self.update()
+            event.accept()
+            return
+        if self._drag_offset is not None and (
+            event.buttons() & self._drag_button
         ):
             target = event.globalPosition().toPoint() - self._drag_offset
             self.move(self._snapped_position(target))
@@ -483,6 +589,16 @@ class PinWindow(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._drag_offset = None
+            self._drag_button = Qt.MouseButton.NoButton
+            self.setCursor(
+                Qt.CursorShape.CrossCursor
+                if self._annotation_mode
+                else Qt.CursorShape.OpenHandCursor
+            )
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             if self._ocr_outcome is not None:
                 if self._ocr_dragging:
@@ -493,9 +609,25 @@ class PinWindow(QWidget):
                 self.update()
                 event.accept()
                 return
+            if self._active_path is not None:
+                if self._pen_dragged:
+                    self._active_path.lineTo(self._source_point(event.position()))
+                    self._annotation_history.append(list(self._annotations))
+                    self._annotations.append(
+                        PenAnnotation(QPainterPath(self._active_path), "#ff3b30", 4.0)
+                    )
+                self._discard_active_stroke()
+                self.update()
+                event.accept()
+                return
             self._ctrl_drag_origin = None
             self._drag_offset = None
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self._drag_button = Qt.MouseButton.NoButton
+            self.setCursor(
+                Qt.CursorShape.CrossCursor
+                if self._annotation_mode
+                else Qt.CursorShape.OpenHandCursor
+            )
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -556,9 +688,9 @@ class PinWindow(QWidget):
                 return
             if key == Qt.Key.Key_S:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    self.save_as_requested.emit(self._image)
+                    self.save_as_requested.emit(self._output_image())
                 else:
-                    self.save_requested.emit(self._image)
+                    self.save_requested.emit(self._output_image())
                 return
             if key == Qt.Key.Key_0:
                 self.reset_view()
@@ -573,6 +705,9 @@ class PinWindow(QWidget):
             return
         if key == Qt.Key.Key_W and not event.modifiers():
             self.request_ocr()
+            return
+        if key == Qt.Key.Key_P and not event.modifiers():
+            self.set_annotation_mode(not self._annotation_mode)
             return
         offset_by_key = {
             Qt.Key.Key_Left: QPoint(-1, 0),
@@ -594,6 +729,17 @@ class PinWindow(QWidget):
             self._exit_ocr_mode()
             event.accept()
             return
+        if self._annotation_mode:
+            if self._active_path is not None:
+                self._discard_active_stroke()
+                self.update()
+            elif self._annotation_history:
+                self._annotations = self._annotation_history.pop()
+                self._show_hud("已撤销一笔")
+            else:
+                self.set_annotation_mode(False)
+            event.accept()
+            return
         menu = QMenu(self)
         status = menu.addAction(
             f"缩放 {round(self._zoom * 100)}% · "
@@ -604,6 +750,7 @@ class PinWindow(QWidget):
         copy_action = menu.addAction("复制图片\tCtrl+C")
         save_action = menu.addAction("保存图片\tCtrl+S")
         save_as_action = menu.addAction("另存为…\tCtrl+Shift+S")
+        annotate_action = menu.addAction("画笔标注\tP")
         ocr_action = menu.addAction("识别文字")
         from .ocr import is_available as ocr_available
 
@@ -621,9 +768,11 @@ class PinWindow(QWidget):
         if chosen == copy_action:
             self.copy_to_clipboard()
         elif chosen == save_action:
-            self.save_requested.emit(self._image)
+            self.save_requested.emit(self._output_image())
         elif chosen == save_as_action:
-            self.save_as_requested.emit(self._image)
+            self.save_as_requested.emit(self._output_image())
+        elif chosen == annotate_action:
+            self.set_annotation_mode(True)
         elif chosen == ocr_action:
             self.request_ocr()
         elif chosen == reset_action:

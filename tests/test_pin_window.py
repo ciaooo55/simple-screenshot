@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeyEvent
 
 from simple_screenshot.pin_window import PinWindow
@@ -14,11 +14,118 @@ def make_image(width: int = 100, height: int = 60, ratio: float = 1.0) -> QImage
     return image
 
 
+class PinMouseEventStub:
+    def __init__(
+        self,
+        point: QPointF,
+        global_point: QPointF,
+        button: Qt.MouseButton,
+        buttons: Qt.MouseButton,
+    ) -> None:
+        self._point = point
+        self._global_point = global_point
+        self._button = button
+        self._buttons = buttons
+
+    def position(self) -> QPointF:
+        return self._point
+
+    def globalPosition(self) -> QPointF:
+        return self._global_point
+
+    def button(self):  # type: ignore[no-untyped-def]
+        return self._button
+
+    def buttons(self):  # type: ignore[no-untyped-def]
+        return self._buttons
+
+    def modifiers(self):  # type: ignore[no-untyped-def]
+        return Qt.KeyboardModifier.NoModifier
+
+    def accept(self) -> None:
+        pass
+
+
 def test_pin_window_uses_logical_size_and_position(qapplication):
     pin = PinWindow(make_image(200, 120, 2.0), QSize(100, 60), QPoint(30, 40))
 
     assert pin.size() == QSize(100, 60)
     assert pin.pos() == QPoint(30, 40)
+    pin.close()
+
+
+def test_pin_is_frameless_topmost_layer_window(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(30, 40))
+
+    assert bool(pin.windowFlags() & Qt.WindowType.FramelessWindowHint)
+    assert bool(pin.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+    assert bool(pin.windowFlags() & Qt.WindowType.Tool)
+    pin.close()
+
+
+def test_middle_button_drag_moves_pin(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(30, 40))
+    press = PinMouseEventStub(
+        QPointF(10, 10),
+        QPointF(40, 50),
+        Qt.MouseButton.MiddleButton,
+        Qt.MouseButton.MiddleButton,
+    )
+    move = PinMouseEventStub(
+        QPointF(30, 20),
+        QPointF(60, 60),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.MiddleButton,
+    )
+    release = PinMouseEventStub(
+        QPointF(30, 20),
+        QPointF(60, 60),
+        Qt.MouseButton.MiddleButton,
+        Qt.MouseButton.NoButton,
+    )
+
+    pin.mousePressEvent(press)  # type: ignore[arg-type]
+    pin.mouseMoveEvent(move)  # type: ignore[arg-type]
+    pin.mouseReleaseEvent(release)  # type: ignore[arg-type]
+
+    assert pin.pos() == QPoint(50, 50)
+    pin.close()
+
+
+def test_pin_annotation_mode_draws_and_preserves_output(qapplication):
+    pin = PinWindow(make_image(), QSize(100, 60), QPoint(0, 0))
+    pin.set_annotation_mode(True)
+    start = QPointF(20, 20)
+    end = QPointF(60, 35)
+
+    pin.mousePressEvent(
+        PinMouseEventStub(
+            start,
+            start,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+    )  # type: ignore[arg-type]
+    pin.mouseMoveEvent(
+        PinMouseEventStub(
+            end,
+            end,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+        )
+    )  # type: ignore[arg-type]
+    pin.mouseReleaseEvent(
+        PinMouseEventStub(
+            end,
+            end,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+        )
+    )  # type: ignore[arg-type]
+
+    assert pin.annotation_mode
+    assert len(pin._annotations) == 1
+    assert pin.image.cacheKey() != pin._image.cacheKey()
     pin.close()
 
 
