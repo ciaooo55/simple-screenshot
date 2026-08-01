@@ -1,6 +1,14 @@
 # 简易截图工具
 
-## 项目速览
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![PySide6](https://img.shields.io/badge/GUI-PySide6-41CD52?logo=qt&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
+![Package](https://img.shields.io/badge/package-portable%20EXE-6b7280)
+
+> 一款常驻 Windows 托盘的轻量截图、标注、OCR 与置顶贴图工具。
+
+## 📌 项目速览
 
 | 项目 | 说明 |
 | --- | --- |
@@ -17,11 +25,22 @@
 
 一个常驻 Windows 托盘的轻量截图工具：跨显示器区域截图、窗口吸附、丰富标注（画笔/箭头/矩形/椭圆/序号/马赛克/文字）、取色放大镜、置顶贴图，支持复制到剪贴板或保存 PNG 文件。
 
-## 下载
+## ✨ 功能亮点
+
+- 跨显示器区域截图、窗口自动吸附、全屏与上次选区恢复。
+- 画笔、荧光、箭头、矩形、椭圆、序号、马赛克和文字标注，支持撤销与重做。
+- RapidOCR 优先、Windows OCR 兜底的本地文字识别；可按位置拖选并复制识别结果。
+- 置顶贴图支持缩放、透明度、鼠标穿透、边缘吸附、即时标注和拖出 PNG。
+- 三组可配置全局快捷键、托盘菜单、开机启动和单实例保护。
+- 保存失败自动回退到剪贴板，诊断日志按当前用户写入 AppData。
+
+## 📦 下载与安装
 
 Windows 便携版在 [GitHub Releases](https://github.com/ciaooo55/simple-screenshot/releases/latest) 提供。主分支每次更新会自动运行测试；推送 `v*` 或 `r*` 版本标签后，GitHub Actions 会远程打包并创建 Release。
 
-## 使用方式
+下载 `SimpleScreenshot.exe` 后放到一个长期固定目录，双击即可运行，无需安装。默认截图目录 `tp` 位于程序所在目录，因此不要把 EXE 长期留在浏览器下载临时目录；需要迁移时，可先在设置中改为固定截图目录。
+
+## 🧭 使用方式
 
 1. 双击 SimpleScreenshot.exe，程序显示启动通知后进入系统托盘（开机自启时静默启动，不打扰）。
 2. 默认全局快捷键：**Alt+A** 截图并复制；**Alt+S** 截图并保存；**Alt+Q** 截图并钉住（贴图）。单击托盘图标立即截图，双击打开设置，悬停可查看当前快捷键。
@@ -35,7 +54,7 @@ Windows 便携版在 [GitHub Releases](https://github.com/ciaooo55/simple-screen
 
 默认截图目录是程序所在目录下的 tp 文件夹，可在设置中修改。配置保存在当前用户的 AppData\Roaming\SimpleScreenshot 目录（旧版本配置会自动迁移）。
 
-## 标注操作
+## ✏️ 标注操作
 
 框选完成后会打开普通截图会话窗口，而不是置顶预览。它可以最小化并从任务栏切换，窗口位置和大小在缩放时不会变化。
 
@@ -44,7 +63,7 @@ Windows 便携版在 [GitHub Releases](https://github.com/ciaooo55/simple-screen
 - **W 识别文字**：会话图片固定不动，画笔操作暂时隐藏；识别在独立进程以稳定的 CPU 模式完成，界面和其他程序保持可用。识别结果可拖选、双击选词、Ctrl+A 全选、Ctrl+C 复制；Esc 或右键回到画笔。OCR 始终使用未烧入笔迹的原图。
 - 右键逐级回退：先取消正在拖动的一笔，再撤销最后一笔；没有笔迹时回到同一张桌面快照重新框选；尚未框选时取消本次截图。
 
-## 贴图（钉住）
+## 📌 贴图（钉住）
 
 把截图钉在屏幕最上层，随时对照参考（类似 Snipaste）：
 
@@ -60,7 +79,27 @@ Windows 便携版在 [GitHub Releases](https://github.com/ciaooo55/simple-screen
 - 定住后仍可继续使用 Alt+A / Alt+S / Alt+Q 截更多图片；默认会把已有贴图一起截入，适合叠图、对照和二次标注。若不想截入贴图，可在设置中开启“截图时隐藏已有贴图”。
 - 可同时钉住多张贴图，互不影响。
 
-## 在新电脑恢复开发环境
+## 🧱 目录结构
+
+```text
+simple-screenshot/
+├─ main.py                       源码启动入口
+├─ simple_screenshot/
+│  ├─ app.py                     托盘应用与操作编排
+│  ├─ capture.py                 桌面捕获与选区交互
+│  ├─ capture_session.py         截图会话窗口
+│  ├─ annotations.py             标注模型与合成
+│  ├─ ocr.py                     RapidOCR / Windows OCR
+│  ├─ pin_window.py              置顶贴图
+│  ├─ config.py                  设置加载、迁移与保存
+│  └─ hotkeys.py                 全局快捷键解析与注册
+├─ tests/                        pytest 自动测试
+├─ assets/                       应用图标
+├─ SimpleScreenshot.spec         PyInstaller 打包配置
+└─ build.ps1                     Windows 构建入口
+```
+
+## 💻 在新电脑恢复开发环境
 
 仓库保存完整源码、测试、图标、依赖清单、构建配置和 GitHub Actions；EXE 仅作为 GitHub Release 资产发布，不提交进 Git 仓库。首次在另一台 Windows 电脑继续开发时：
 
@@ -89,15 +128,19 @@ git push -u origin feature/功能名称
 
 不要复制单独的源码压缩包作为开发目录；完整 `git clone` 才会保留提交历史、标签和远程关联。
 
-## 从现有源码目录运行
+### 从现有源码目录运行
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
 python main.py
 ```
 
-## 构建便携 EXE
+项目以 Python 3.12 为 CI 验证版本。Windows OCR 依赖按平台标记安装；RapidOCR 包按 CI 的方式单独安装，避免其依赖解析改写仓库锁定的运行依赖。
+
+## 🛠️ 构建便携 EXE
 
 ```powershell
 .\build.ps1
@@ -107,7 +150,27 @@ python main.py
 
 spec 文件只打包实际用到的 Qt 组件（裁掉了 QtQuick/Qml、软件 OpenGL、OpenSSL、多余的图片格式插件与翻译等），产物约 23MB；单文件版每次启动要先解包到临时目录，体积直接决定启动速度，往 spec 里加东西前请先确认运行时真的需要。
 
-## 测试
+## 📁 配置、数据与日志
+
+| 数据 | 默认位置 | 说明 |
+| --- | --- | --- |
+| 用户设置 | `%APPDATA%\SimpleScreenshot\settings.json` | 快捷键、保存目录、贴图与截图偏好 |
+| 设置恢复日志 | `%APPDATA%\SimpleScreenshot\settings.error.log` | 配置损坏或迁移失败时记录 |
+| 应用诊断日志 | `%APPDATA%\SimpleScreenshot\app.log` | 未捕获异常与运行诊断 |
+| 原生崩溃日志 | `%APPDATA%\SimpleScreenshot\native-crash.log` | 原生组件故障排查 |
+| 默认截图 | `<程序目录>\tp\` | 可在设置中修改 |
+| 拖出临时 PNG | 系统临时目录下的 `SimpleScreenshot` | 供拖放到其他应用使用 |
+
+旧版配置会在加载时迁移。若设置异常，先退出程序，备份上述目录后再重置配置；不要在程序运行中直接编辑 `settings.json`。
+
+## 🔐 隐私与权限
+
+- 截图和 OCR 均在本机完成，项目代码中没有云端上传流程；把图片拖入网页或聊天软件后，则受目标应用的隐私规则约束。
+- 截图、贴图、OCR 文本与日志可能包含敏感画面、文件名或窗口信息，分享前请检查并打码。
+- 全局热键、开机启动、剪贴板和屏幕捕获需要当前 Windows 会话权限；首次运行若被安全软件拦截，请核对下载来源与 Release 文件。
+- `tp`、`dist`、构建缓存和本地配置不应提交到版本库。发布 EXE 前应在干净环境运行测试并手工验证多显示器缩放。
+
+## 🧪 测试
 
 ```powershell
 python -m pytest -q
