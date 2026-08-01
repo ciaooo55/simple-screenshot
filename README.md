@@ -57,13 +57,43 @@ Windows 便携版在 [GitHub Releases](https://github.com/ciaooo55/simple-screen
 - **Ctrl+按住拖动可把贴图拖出为 PNG 文件**，直接拖进聊天窗口、网页上传框就能发送。
 - 右键菜单可开启**鼠标穿透**：贴图变成纯参考图，点击直接落到下方窗口；托盘菜单"恢复贴图可点击"一键解除。
 - 缩小有下限保护（短边不低于 48px），不会缩到点不中；剪贴板贴出的超大图会自动缩小到屏幕内，滚轮可再放大。
-- 定住后仍可继续使用 Alt+A / Alt+S / Alt+Q 截更多图片；默认在抓取桌面快照的瞬间暂时隐藏旧贴图并立即恢复，避免旧贴图被截进新图。想连贴图一起截，在设置里关掉该选项即可。
+- 定住后仍可继续使用 Alt+A / Alt+S / Alt+Q 截更多图片；默认会把已有贴图一起截入，适合叠图、对照和二次标注。若不想截入贴图，可在设置中开启“截图时隐藏已有贴图”。
 - 可同时钉住多张贴图，互不影响。
 
-## 从源码运行
+## 在新电脑恢复开发环境
+
+仓库保存完整源码、测试、图标、依赖清单、构建配置和 GitHub Actions；EXE 仅作为 GitHub Release 资产发布，不提交进 Git 仓库。首次在另一台 Windows 电脑继续开发时：
+
+```powershell
+git clone https://github.com/ciaooo55/simple-screenshot.git
+cd simple-screenshot
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe main.py
+```
+
+以后继续已有工作，先同步主分支，再从新分支修改：
+
+```powershell
+git switch main
+git pull --ff-only origin main
+git switch -c feature/功能名称
+# 修改并测试后：
+git add .
+git commit -m "feat: 描述本次改动"
+git push -u origin feature/功能名称
+```
+
+不要复制单独的源码压缩包作为开发目录；完整 `git clone` 才会保留提交历史、标签和远程关联。
+
+## 从现有源码目录运行
 
 ```powershell
 python -m pip install -r requirements.txt
+python -m pip install --no-deps "rapidocr_onnxruntime>=1.4,<2"
 python main.py
 ```
 

@@ -10,8 +10,8 @@ from typing import Any
 
 
 APP_NAME = "SimpleScreenshot"
-CONFIG_VERSION = 2
-SUPPORTED_VERSIONS = {1, 2}
+CONFIG_VERSION = 3
+SUPPORTED_VERSIONS = {1, 2, 3}
 PIN_HOTKEY_CANDIDATES = ("Alt+Q", "Alt+W", "Alt+E", "Alt+X")
 
 
@@ -36,7 +36,7 @@ class AppSettings:
     pin_hotkey: str
     save_directory: str
     start_with_windows: bool
-    hide_pins_on_capture: bool = True
+    hide_pins_on_capture: bool = False
 
     def updated(self, **changes: Any) -> "AppSettings":
         return replace(self, **changes)
@@ -51,7 +51,7 @@ def default_settings(base_dir: Path | None = None) -> AppSettings:
         pin_hotkey="Alt+Q",
         save_directory=str(root / "tp"),
         start_with_windows=False,
-        hide_pins_on_capture=True,
+        hide_pins_on_capture=False,
     )
 
 
@@ -112,7 +112,7 @@ class SettingsStore:
         start_with_windows = raw.get(
             "start_with_windows", defaults.start_with_windows
         )
-        hide_pins_on_capture = raw.get(
+        stored_hide_pins = raw.get(
             "hide_pins_on_capture", defaults.hide_pins_on_capture
         )
 
@@ -128,8 +128,14 @@ class SettingsStore:
             raise ValueError("保存目录无效")
         if not isinstance(start_with_windows, bool):
             raise ValueError("开机启动设置无效")
-        if not isinstance(hide_pins_on_capture, bool):
+        if not isinstance(stored_hide_pins, bool):
             raise ValueError("截图时隐藏贴图设置无效")
+        # v2 首次加入该选项时默认开启，导致定住图片无法参与下一次截图。
+        # v3 改为符合贴图工作流的默认值：复制/保存截图会包含已有贴图。
+        # 旧配置统一迁移一次；用户在 v3 以后仍可主动重新开启隐藏。
+        hide_pins_on_capture = (
+            False if version < CONFIG_VERSION else stored_hide_pins
+        )
 
         # Keep validation close to persistence so malformed manual edits are
         # diagnosed and safely replaced by defaults on the next launch.

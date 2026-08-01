@@ -166,7 +166,7 @@ class SettingsDialog(QDialog):
         self.startup_checkbox = QCheckBox("登录 Windows 后自动启动", self)
         form.addRow("开机启动：", self.startup_checkbox)
         self.hide_pins_checkbox = QCheckBox(
-            "截图时暂时隐藏已有贴图（避免旧贴图被截进新图）", self
+            "截图时隐藏已有贴图（关闭时会把贴图一起截入）", self
         )
         form.addRow("贴图：", self.hide_pins_checkbox)
         root.addLayout(form)

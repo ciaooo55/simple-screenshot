@@ -22,14 +22,14 @@ def test_missing_config_uses_project_tp(tmp_path):
 def test_settings_round_trip(tmp_path):
     store = SettingsStore(tmp_path / "config", tmp_path)
     expected = AppSettings(
-        2, "Ctrl+Shift+A", "F8", "F9", str(tmp_path / "shots"), True
+        3, "Ctrl+Shift+A", "F8", "F9", str(tmp_path / "shots"), True
     )
 
     store.save(expected)
     actual = store.load()
 
     assert actual == expected
-    assert json.loads(store.path.read_text(encoding="utf-8"))["version"] == 2
+    assert json.loads(store.path.read_text(encoding="utf-8"))["version"] == 3
 
 
 def test_v1_config_migrates_with_default_pin_hotkey(tmp_path):
@@ -50,7 +50,7 @@ def test_v1_config_migrates_with_default_pin_hotkey(tmp_path):
 
     settings = store.load()
 
-    assert settings.version == 2
+    assert settings.version == 3
     assert settings.copy_hotkey == "Alt+A"
     assert settings.save_hotkey == "Alt+S"
     assert settings.pin_hotkey == "Alt+Q"
@@ -144,7 +144,7 @@ def test_duplicate_pin_hotkey_is_treated_as_invalid_config(tmp_path):
 def test_hide_pins_on_capture_roundtrip_and_default(tmp_path):
     store = SettingsStore(config_dir=tmp_path / "cfg", base_dir=tmp_path)
 
-    # 磁盘上真实存在的旧版配置缺这个键:走 _decode 迁移路径,默认打开。
+    # v2 默认隐藏贴图；升级 v3 后迁移为关闭，让复制/保存截图包含贴图。
     store.config_dir.mkdir(parents=True)
     store.path.write_text(
         json.dumps(
@@ -155,16 +155,18 @@ def test_hide_pins_on_capture_roundtrip_and_default(tmp_path):
                 "pin_hotkey": "Alt+Q",
                 "save_directory": str(tmp_path / "tp"),
                 "start_with_windows": False,
+                "hide_pins_on_capture": True,
             }
         ),
         encoding="utf-8",
     )
     loaded = store.load()
-    assert loaded.hide_pins_on_capture is True
+    assert loaded.hide_pins_on_capture is False
     assert store.last_warning is None
 
-    store.save(default_settings(tmp_path).updated(hide_pins_on_capture=False))
-    assert store.load().hide_pins_on_capture is False
+    # v3 用户仍可主动开启隐藏，保存后应稳定 round-trip。
+    store.save(default_settings(tmp_path).updated(hide_pins_on_capture=True))
+    assert store.load().hide_pins_on_capture is True
 
 
 def test_hide_pins_wrong_type_falls_back_to_defaults(tmp_path):
@@ -186,5 +188,5 @@ def test_hide_pins_wrong_type_falls_back_to_defaults(tmp_path):
     )
 
     loaded = store.load()
-    assert loaded.hide_pins_on_capture is True
+    assert loaded.hide_pins_on_capture is False
     assert store.last_warning is not None
