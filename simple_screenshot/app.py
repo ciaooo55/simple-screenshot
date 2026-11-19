@@ -335,7 +335,14 @@ class AppController:
         if capturing:
             self.hotkeys.suspend()
         else:
-            self.hotkeys.resume()
+            failed = self.hotkeys.resume()
+            if failed:
+                names = "、".join(hotkey.display for hotkey in failed)
+                self.notify(
+                    "快捷键未能恢复",
+                    f"{names} 已被其他程序占用，请在设置中更换。",
+                    warning=True,
+                )
 
     def show_settings(self) -> None:
         if self.overlay is not None or self._capture_pending:

@@ -214,3 +214,17 @@ def test_incremental_fallback_keeps_unconflicted_hotkeys():
 
     assert set(working) == {"copy", "pin"}
     assert set(backend.registered.values()) == {mapping["copy"], mapping["pin"]}
+
+
+def test_resume_reports_hotkeys_taken_while_suspended():
+    backend = FakeBackend()
+    manager = HotkeyManager(backend, install_filter=False)
+    copy, save = parse_hotkey("Alt+A"), parse_hotkey("Alt+S")
+    assert manager.apply({"copy": copy, "save": save})[0]
+
+    manager.suspend()
+    backend.fail.add(save)  # 挂起期间被别的程序抢注
+
+    assert manager.resume() == [save]
+    assert set(backend.registered.values()) == {copy}
+    assert manager.resume() == []
