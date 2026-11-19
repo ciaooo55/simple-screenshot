@@ -751,6 +751,8 @@ class CaptureSessionWindow(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self._ocr_loading:
+            if event.key() == Qt.Key.Key_Escape:
+                self._exit_ocr_mode()
             event.accept()
             return
         if self._ocr_outcome is not None:
