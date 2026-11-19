@@ -94,6 +94,7 @@ class CaptureSessionWindow(QWidget):
         self.primary_action = primary_action
         self.annotations: list[Annotation] = []
         self._history: list[list[Annotation]] = []
+        self._redo_stack: list[list[Annotation]] = []
         self._active_path: QPainterPath | None = None
         self._shape_origin: QPointF | None = None
         self._active_shape: Annotation | None = None
@@ -451,10 +452,18 @@ class CaptureSessionWindow(QWidget):
 
     def _undo(self) -> None:
         if self._history:
+            self._redo_stack.append(self.annotations)
             self.annotations = self._history.pop()
             self._canvas.update()
 
+    def _redo(self) -> None:
+        if self._redo_stack:
+            self._history.append(self.annotations)
+            self.annotations = self._redo_stack.pop()
+            self._canvas.update()
+
     def _push_annotation(self, annotation: Annotation) -> None:
+        self._redo_stack.clear()
         self._history.append(list(self.annotations))
         self.annotations.append(annotation)
         self._canvas.update()
@@ -798,6 +807,11 @@ class CaptureSessionWindow(QWidget):
                     self._canvas.update()
                 else:
                     self._undo()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Y:
+                if self._active_path is None and self._shape_origin is None:
+                    self._redo()
                 event.accept()
                 return
             if event.key() == Qt.Key.Key_C:
