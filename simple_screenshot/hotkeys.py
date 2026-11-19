@@ -272,12 +272,16 @@ class HotkeyManager(QObject):
         for identifier in self.current:
             self.backend.unregister(identifier)
 
-    def resume(self) -> None:
+    def resume(self) -> list[Hotkey]:
+        """恢复挂起前的热键,返回没能重新注册的那些(挂起期间被别的程序占用)。"""
         if not self._suspended:
-            return
+            return []
         self._suspended = False
-        for identifier, hotkey in self.current.items():
-            self.backend.register(identifier, hotkey)
+        return [
+            hotkey
+            for identifier, hotkey in self.current.items()
+            if not self.backend.register(identifier, hotkey)
+        ]
 
     def apply(self, hotkeys: dict[str, Hotkey]) -> tuple[bool, str]:
         # apply 之后注册状态以结果为准,挂起标记必须清掉。
