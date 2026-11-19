@@ -79,6 +79,41 @@ def test_drag_beyond_system_threshold_creates_pen_annotation(qapplication):
     assert len(session.annotations) == 1
     session.close()
 
+def test_ctrl_y_redoes_undone_annotation_until_new_stroke(qapplication):
+    session = make_session()
+
+    def stroke(offset: float) -> None:
+        start = session._image_rect().center() + QPointF(0, offset)
+        end = QPointF(start.x() + QApplication.startDragDistance() + 20, start.y())
+        session.mousePressEvent(MouseEventStub(start))  # type: ignore[arg-type]
+        session.mouseMoveEvent(MouseEventStub(end))  # type: ignore[arg-type]
+        session.mouseReleaseEvent(MouseEventStub(end))  # type: ignore[arg-type]
+
+    def press(key: Qt.Key) -> None:
+        session.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.ControlModifier)
+        )
+
+    stroke(0)
+    stroke(20)
+    drawn = list(session.annotations)
+
+    press(Qt.Key.Key_Z)
+    press(Qt.Key.Key_Z)
+    assert session.annotations == []
+    press(Qt.Key.Key_Y)
+    press(Qt.Key.Key_Y)
+    assert session.annotations == drawn
+    press(Qt.Key.Key_Y)  # 没有可重做的内容时不做任何事
+    assert session.annotations == drawn
+
+    press(Qt.Key.Key_Z)
+    stroke(40)  # 新的一笔作废重做记录
+    after = list(session.annotations)
+    press(Qt.Key.Key_Y)
+    assert session.annotations == after
+    session.close()
+
 
 def test_dedicated_canvas_receives_real_drag_events(qapplication):
     session = make_session()
@@ -233,40 +268,4 @@ def test_ocr_hides_pen_and_restores_it_on_exit(qapplication):
 
     session._exit_ocr_mode()
     assert not session._toolbar.isHidden()
-    session.close()
-
-
-def test_ctrl_y_redoes_undone_annotation_until_new_stroke(qapplication):
-    session = make_session()
-
-    def stroke(offset: float) -> None:
-        start = session._image_rect().center() + QPointF(0, offset)
-        end = QPointF(start.x() + QApplication.startDragDistance() + 20, start.y())
-        session.mousePressEvent(MouseEventStub(start))  # type: ignore[arg-type]
-        session.mouseMoveEvent(MouseEventStub(end))  # type: ignore[arg-type]
-        session.mouseReleaseEvent(MouseEventStub(end))  # type: ignore[arg-type]
-
-    def press(key: Qt.Key) -> None:
-        session.keyPressEvent(
-            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.ControlModifier)
-        )
-
-    stroke(0)
-    stroke(20)
-    drawn = list(session.annotations)
-
-    press(Qt.Key.Key_Z)
-    press(Qt.Key.Key_Z)
-    assert session.annotations == []
-    press(Qt.Key.Key_Y)
-    press(Qt.Key.Key_Y)
-    assert session.annotations == drawn
-    press(Qt.Key.Key_Y)  # 没有可重做的内容时不做任何事
-    assert session.annotations == drawn
-
-    press(Qt.Key.Key_Z)
-    stroke(40)  # 新的一笔作废重做记录
-    after = list(session.annotations)
-    press(Qt.Key.Key_Y)
-    assert session.annotations == after
     session.close()
