@@ -234,3 +234,27 @@ def test_ocr_hides_pen_and_restores_it_on_exit(qapplication):
     session._exit_ocr_mode()
     assert not session._toolbar.isHidden()
     session.close()
+
+
+def test_escape_cancels_ocr_while_loading(qapplication):
+    session = make_session()
+    session.request_ocr()
+    assert session._ocr_loading
+    assert session._toolbar.isHidden()
+
+    session.keyPressEvent(
+        QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Escape,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+    assert not session._ocr_loading
+    assert not session._toolbar.isHidden()
+
+    # 迟到的识别结果不应再把窗口拉回识别模式。
+    session.set_ocr_result(
+        OcrOutcome("A", 1, (OcrSpan("A", 0, 0, 5, 5, 20, 20),))
+    )
+    assert session._ocr_outcome is None
+    session.close()
