@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
@@ -23,6 +24,11 @@ namespace SimpleScreenshot
         [DllImport("dwmapi")] internal static extern int DwmFlush();
         [DllImport("shell32", CharSet = CharSet.Unicode)]
         internal static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+        [DllImport("user32")] static extern IntPtr GetDC(IntPtr window);
+        [DllImport("user32")] static extern int ReleaseDC(IntPtr window, IntPtr dc);
+        [DllImport("gdi32", SetLastError = true)]
+        static extern bool BitBlt(IntPtr destination, int dx, int dy, int width, int height,
+            IntPtr source, int sx, int sy, uint operation);
 
         [DllImport("user32")] static extern bool IsWindowVisible(IntPtr window);
         [DllImport("user32")] static extern bool IsIconic(IntPtr window);
@@ -77,5 +83,25 @@ namespace SimpleScreenshot
         }
 
         internal static bool WinDown => GetKeyState(0x5B) < 0 || GetKeyState(0x5C) < 0;
+
+        internal static void CopyDesktop(Graphics target, Rectangle desktop, IEnumerable<Rectangle> monitors)
+        {
+            const uint sourceCopyWithLayeredWindows = 0x40CC0020;
+            IntPtr screen = GetDC(IntPtr.Zero);
+            if (screen == IntPtr.Zero) throw new InvalidOperationException("无法访问 Windows 桌面。");
+            try
+            {
+                IntPtr destination = target.GetHdc();
+                try
+                {
+                    foreach (Rectangle monitor in monitors)
+                        if (!BitBlt(destination, monitor.X - desktop.X, monitor.Y - desktop.Y,
+                            monitor.Width, monitor.Height, screen, monitor.X, monitor.Y, sourceCopyWithLayeredWindows))
+                            throw new Win32Exception();
+                }
+                finally { target.ReleaseHdc(destination); }
+            }
+            finally { ReleaseDC(IntPtr.Zero, screen); }
+        }
     }
 }

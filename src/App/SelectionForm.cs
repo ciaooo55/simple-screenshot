@@ -100,6 +100,7 @@ namespace SimpleScreenshot
             base.OnShown(e);
             Activate();
             SetPointer(PointToClient(MousePosition));
+            LayoutRibbon();
             Invalidate();
         }
 
@@ -142,6 +143,7 @@ namespace SimpleScreenshot
                 Cursor = x == 0 && y == 0 ? (selection.Contains(cursor) ? Cursors.SizeAll : Cursors.Cross) :
                     x == 0 ? Cursors.SizeNS : y == 0 ? Cursors.SizeWE : x == y ? Cursors.SizeNWSE : Cursors.SizeNESW;
             }
+            else Cursor = Cursors.Cross;
             Invalidate();
         }
 
@@ -215,8 +217,8 @@ namespace SimpleScreenshot
         }
 
         Point HandlePoint(int x, int y) => new Point(
-            x < 0 ? selection.Left : x > 0 ? selection.Right : selection.Left + selection.Width / 2,
-            y < 0 ? selection.Top : y > 0 ? selection.Bottom : selection.Top + selection.Height / 2);
+            x < 0 ? selection.Left : x > 0 ? selection.Right - 1 : selection.Left + selection.Width / 2,
+            y < 0 ? selection.Top : y > 0 ? selection.Bottom - 1 : selection.Top + selection.Height / 2);
 
         void CancelDrag()
         {
@@ -250,9 +252,7 @@ namespace SimpleScreenshot
             if (data == (Keys.Control | Keys.A)) { FullScreen(); return true; }
             if (data == Keys.R && !dragging)
             {
-                var screenRect = lastSelection();
-                screenRect.Offset(-snapshot.Bounds.X, -snapshot.Bounds.Y);
-                var previous = Rectangle.Intersect(ImageBounds, screenRect);
+                var previous = Geometry.RestoreSelection(lastSelection(), snapshot.Bounds);
                 if (previous.Width >= MinimumSelectionSize && previous.Height >= MinimumSelectionSize)
                 {
                     selection = previous;
@@ -358,7 +358,7 @@ namespace SimpleScreenshot
             Color value = snapshot.Bitmap.GetPixel(cursor.X, cursor.Y);
             Theme.Text(g, $"位置 {cursor.X + snapshot.Bounds.X}, {cursor.Y + snapshot.Bounds.Y}",
                 Theme.UiFont, new Rectangle(panel.X + 8, panel.Y + 66, width - 15, 22), Color.White);
-            Theme.Text(g, notice ?? $"#{value.R:X2}{value.G:X2}{value.B:X2}  ·  {value.R}, {value.G}, {value.B}",
+            Theme.Text(g, notice ?? $"#{value.R:X2}{value.G:X2}{value.B:X2}  ·  RGB {value.R}, {value.G}, {value.B}",
                 Theme.UiFont, new Rectangle(panel.X + 8, panel.Y + 87, width - 15, 22), Color.FromArgb(172, 210, 255));
         }
 

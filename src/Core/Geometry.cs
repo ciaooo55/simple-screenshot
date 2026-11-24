@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 
 namespace SimpleScreenshot.Core
 {
@@ -10,6 +11,14 @@ namespace SimpleScreenshot.Core
         public static double ScaleLogical(double value, double dpi) => value * 96 / dpi;
 
         public static int Clamp(int value, int low, int high) => Math.Max(low, Math.Min(value, high));
+
+        public static Rectangle RestoreSelection(Rectangle screenSelection, Rectangle desktop)
+        {
+            var visible = Rectangle.Intersect(screenSelection, desktop);
+            if (visible.Width <= 0 || visible.Height <= 0) return Rectangle.Empty;
+            visible.Offset(-desktop.X, -desktop.Y);
+            return visible;
+        }
 
         public static int DragAxis(int fixedPoint, int pointer, int lower, int upper, int minSize)
         {

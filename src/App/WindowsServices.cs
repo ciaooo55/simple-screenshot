@@ -142,18 +142,13 @@ namespace SimpleScreenshot
         {
             var screens = Screen.AllScreens;
             var bounds = screens.Select(s => s.Bounds).Aggregate(Rectangle.Union);
-            var image = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppPArgb);
+            var image = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb);
             try
             {
                 using (var canvas = Graphics.FromImage(image))
                 {
                     canvas.Clear(Color.Black);
-                    foreach (var screen in screens)
-                    {
-                        var rect = screen.Bounds;
-                        canvas.CopyFromScreen(rect.X, rect.Y, rect.X - bounds.X, rect.Y - bounds.Y,
-                            rect.Size, CopyPixelOperation.SourceCopy | CopyPixelOperation.CaptureBlt);
-                    }
+                    Native.CopyDesktop(canvas, bounds, screens.Select(screen => screen.Bounds));
                 }
                 return new DesktopSnapshot(image, bounds, Native.Discover(bounds));
             }

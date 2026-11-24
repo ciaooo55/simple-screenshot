@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.IO;
 using System.Text;
 using SimpleScreenshot.Core;
@@ -68,6 +69,16 @@ namespace SimpleScreenshot.Tests
             Assert.Equal(-100, Geometry.ScaleLogical(-150, 144));
             Assert.Equal(-192, Geometry.AnchorOrigin(-180, 24, 1.5));
             Assert.Equal(-200, Geometry.DragAxis(-180, -300, -200, 0, 2));
+        }
+
+        [Fact]
+        public void RestoresScreenSelectionClippedToCurrentDesktop()
+        {
+            var desktop = new Rectangle(-1280, -240, 3200, 1320);
+            Assert.Equal(new Rectangle(0, 220, 80, 200),
+                Geometry.RestoreSelection(new Rectangle(-1400, -20, 200, 200), desktop));
+            Assert.Equal(Rectangle.Empty,
+                Geometry.RestoreSelection(new Rectangle(1920, 0, 100, 100), desktop));
         }
 
         [Fact]
