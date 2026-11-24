@@ -6,8 +6,11 @@ using System.IO;
 using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 using Timer = System.Threading.Timer;
 
 namespace SimpleScreenshot
@@ -55,7 +58,7 @@ namespace SimpleScreenshot
                 image.Save(payload, ImageFormat.Bmp);
                 if (payload.Length > MaxPayload) throw new ArgumentException("截图过大，请缩小选区后重试。");
                 NamedPipeServerStream connection;
-                bool connect = false;
+                int? expectedClientPid = null;
                 lock (gate)
                 {
                     if (disposed) throw new ObjectDisposedException(nameof(OcrClient));
@@ -66,7 +69,13 @@ namespace SimpleScreenshot
                         if (!File.Exists(Path.Combine(directory, "SimpleScreenshot.Ocr.dll")))
                             throw new InvalidOperationException("未找到文字识别组件，请完整解压包含 ocr 文件夹的压缩包。");
                         string name = "SimpleScreenshot-OCR-" + Guid.NewGuid().ToString("N");
-                        server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                        var security = new PipeSecurity();
+                        security.SetAccessRuleProtection(true, false);
+                        using (var identity = WindowsIdentity.GetCurrent())
+                            security.AddAccessRule(new PipeAccessRule(identity.User, PipeAccessRights.FullControl,
+                                AccessControlType.Allow));
+                        server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+                            PipeOptions.Asynchronous, 0, 0, security);
                         try
                         {
                             worker = Process.Start(new ProcessStartInfo
@@ -75,20 +84,23 @@ namespace SimpleScreenshot
                                 Arguments = "--ocr-worker " + name + (safeMode ? " --safe-mode" : ""),
                                 UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory
                             });
+                            expectedClientPid = worker.Id;
                         }
                         catch { StopWorker(); throw; }
-                        connect = true;
                     }
                     connection = server;
                 }
                 try
                 {
-                    if (connect)
+                    if (expectedClientPid.HasValue)
                     {
                         var wait = connection.BeginWaitForConnection(null, null);
                         using (var signal = wait.AsyncWaitHandle)
                             if (!signal.WaitOne(TimeSpan.FromSeconds(15))) throw new TimeoutException("文字识别进程启动超时。");
                         connection.EndWaitForConnection(wait);
+                        if (!GetNamedPipeClientProcessId(connection.SafePipeHandle, out uint actualClientPid) ||
+                            actualClientPid != (uint)expectedClientPid.Value)
+                            throw new IOException("无法验证文字识别进程的连接。");
                     }
                     using (var output = new BinaryWriter(connection, System.Text.Encoding.UTF8, true))
                     using (var input = new BinaryReader(connection, System.Text.Encoding.UTF8, true))
@@ -138,6 +150,9 @@ namespace SimpleScreenshot
 
         [DllImport("kernel32", CharSet = CharSet.Unicode)]
         static extern bool SetDllDirectory(string path);
+
+        [DllImport("kernel32", ExactSpelling = true)]
+        static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint processId);
 
         internal static void Worker(string name, bool safe)
         {
