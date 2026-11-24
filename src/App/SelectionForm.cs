@@ -21,7 +21,7 @@ namespace SimpleScreenshot
         Point cursor, origin;
         Native.WindowTarget hoverWindow, pressedWindow;
         int handleX, handleY;
-        bool dragging, moving, fineTune, help, cursorKnown;
+        bool dragging, areaDragStarted, moving, fineTune, help, cursorKnown;
         string notice;
         readonly Timer noticeTimer = new Timer { Interval = 1000 };
 
@@ -121,6 +121,7 @@ namespace SimpleScreenshot
             origin = cursor;
             original = selection;
             handleX = handleY = 0;
+            areaDragStarted = false;
             moving = false;
             pressedWindow = hoverWindow;
             if (fineTune && HasSelection)
@@ -165,7 +166,8 @@ namespace SimpleScreenshot
                 selection = Rectangle.FromLTRB(left, top, right, bottom);
             }
             else
-                selection = Geometry.SelectionFromDrag(origin, cursor, ImageBounds.Size, ShiftDown, SystemInformation.DragSize);
+                selection = Geometry.SelectionFromDrag(origin, cursor, ImageBounds.Size, ShiftDown,
+                    SystemInformation.DragSize, ref areaDragStarted);
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
@@ -176,7 +178,7 @@ namespace SimpleScreenshot
             bool transformed = moving || handleX != 0 || handleY != 0;
             dragging = moving = false;
             Capture = false;
-            if (!transformed && !HasSelection)
+            if (!transformed && !areaDragStarted && !HasSelection)
                 selection = pressedWindow?.Bounds ?? original;
             LayoutRibbon();
             Invalidate();

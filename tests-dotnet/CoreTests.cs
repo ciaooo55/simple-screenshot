@@ -101,14 +101,32 @@ namespace SimpleScreenshot.Tests
             var start = new Point(10, 20);
             var edge = new Point(99, 79);
             var expected = new Rectangle(10, 20, 90, 60);
-            Assert.Equal(expected, Geometry.SelectionFromDrag(start, edge, bounds, false, dragSize));
-            Assert.Equal(expected, Geometry.SelectionFromDrag(edge, start, bounds, false, dragSize));
+            bool dragStarted = false;
+            Assert.Equal(expected, Geometry.SelectionFromDrag(start, edge, bounds, false, dragSize, ref dragStarted));
+            Assert.Equal(expected, Geometry.SelectionFromDrag(edge, start, bounds, false, dragSize, ref dragStarted));
             Assert.Equal(new Rectangle(40, 20, 60, 60),
-                Geometry.SelectionFromDrag(new Point(40, 20), edge, bounds, true, dragSize));
-            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(edge, edge, bounds, false, dragSize));
-            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(start, new Point(11, 21), bounds, false, dragSize));
+                Geometry.SelectionFromDrag(new Point(40, 20), edge, bounds, true, dragSize, ref dragStarted));
+            dragStarted = false;
+            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(edge, edge, bounds, false, dragSize, ref dragStarted));
+            Assert.Equal(Rectangle.Empty,
+                Geometry.SelectionFromDrag(start, new Point(11, 21), bounds, false, dragSize, ref dragStarted));
+            Assert.False(dragStarted);
             Assert.Equal(new Rectangle(10, 20, 3, 2),
-                Geometry.SelectionFromDrag(start, new Point(12, 21), bounds, false, dragSize));
+                Geometry.SelectionFromDrag(start, new Point(12, 21), bounds, false, dragSize, ref dragStarted));
+        }
+
+        [Fact]
+        public void AreaDragReturningNearOriginRemainsADragWithoutACrop()
+        {
+            var origin = new Point(10, 20);
+            var bounds = new Size(100, 80);
+            var dragSize = new Size(4, 4);
+            bool dragStarted = false;
+            Assert.NotEqual(Rectangle.Empty,
+                Geometry.SelectionFromDrag(origin, new Point(50, 60), bounds, false, dragSize, ref dragStarted));
+            Assert.Equal(Rectangle.Empty,
+                Geometry.SelectionFromDrag(origin, new Point(11, 21), bounds, false, dragSize, ref dragStarted));
+            Assert.True(dragStarted);
         }
 
         [Fact]
