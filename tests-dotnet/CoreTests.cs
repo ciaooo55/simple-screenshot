@@ -90,6 +90,10 @@ namespace SimpleScreenshot.Tests
         }
 
         [Fact]
+        public void FitsPinScaleWithinBothWindowTrackingLimits() =>
+            Assert.Equal(1.1, Geometry.FitScale(new Size(4000, 2000), new Size(5000, 2200)));
+
+        [Fact]
         public void DrawingAfterUndoClearsRedo()
         {
             var history = new History<int>();

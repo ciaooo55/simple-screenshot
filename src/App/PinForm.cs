@@ -43,8 +43,8 @@ namespace SimpleScreenshot
             KeyPreview = true;
             Cursor = Cursors.Cross;
             Location = location;
-            ClientSize = image.Size;
             minZoom = Math.Min(1, Math.Max(.2f, 48f / Math.Min(image.Width, image.Height)));
+            SetZoom(1, Point.Empty, false);
             ocr = new OcrLayer(Invalidate, value => ShowHud(value, false));
             hudTimer.Tick += (_, __) => { hudTimer.Stop(); hud = null; Invalidate(); };
             if (fit)
@@ -105,12 +105,14 @@ namespace SimpleScreenshot
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
-            g.InterpolationMode = zoom == 1 ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBilinear;
+            if (ClientSize.Width == 0 || ClientSize.Height == 0) return;
+            var scale = ImageScale;
+            g.InterpolationMode = ClientSize == image.Size ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBilinear;
             g.PixelOffsetMode = PixelOffsetMode.Half;
             g.DrawImage(image, ClientRectangle, new Rectangle(Point.Empty, image.Size), GraphicsUnit.Pixel);
             var state = g.Save();
-            g.ScaleTransform(zoom, zoom);
-            if (ocr.Active) ocr.Draw(g, zoom);
+            g.ScaleTransform(scale.Width, scale.Height);
+            if (ocr.Active) ocr.Draw(g, Math.Min(scale.Width, scale.Height));
             else
             {
                 foreach (var command in history.Items) command.Draw(g, image);
@@ -125,7 +127,13 @@ namespace SimpleScreenshot
             Theme.Text(g, hud, Theme.UiFont, position, Color.White, true);
         }
 
-        PointF Source(Point p) => new PointF(p.X / zoom, p.Y / zoom);
+        SizeF ImageScale => new SizeF((float)ClientSize.Width / image.Width, (float)ClientSize.Height / image.Height);
+
+        PointF Source(Point p)
+        {
+            var scale = ImageScale;
+            return new PointF(p.X / scale.Width, p.Y / scale.Height);
+        }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
@@ -242,12 +250,14 @@ namespace SimpleScreenshot
 
         void SetZoom(float value, Point local, bool feedback)
         {
-            value = Math.Max(minZoom, Math.Min(5, value));
-            double ratio = value / zoom;
-            var point = new Point(Geometry.AnchorOrigin(Left, local.X, ratio), Geometry.AnchorOrigin(Top, local.Y, ratio));
-            zoom = value;
-            Bounds = new Rectangle(point, new Size(Math.Max(1, (int)Math.Round(image.Width * zoom)),
-                Math.Max(1, (int)Math.Round(image.Height * zoom))));
+            zoom = (float)Math.Min(Math.Max(minZoom, Math.Min(5, value)),
+                Geometry.FitScale(image.Size, SystemInformation.MaxWindowTrackSize));
+            var previous = ClientSize;
+            ClientSize = new Size(Math.Max(1, (int)Math.Round(image.Width * zoom)),
+                Math.Max(1, (int)Math.Round(image.Height * zoom)));
+            Location = new Point(
+                Geometry.AnchorOrigin(Left, local.X, (double)ClientSize.Width / Math.Max(1, previous.Width)),
+                Geometry.AnchorOrigin(Top, local.Y, (double)ClientSize.Height / Math.Max(1, previous.Height)));
             if (feedback) ShowHud($"缩放 {zoom:P0}");
         }
 

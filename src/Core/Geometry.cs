@@ -29,5 +29,8 @@ namespace SimpleScreenshot.Core
 
         public static int AnchorOrigin(int origin, double point, double zoomRatio) =>
             (int)Math.Round(origin + point * (1 - zoomRatio), MidpointRounding.AwayFromZero);
+
+        public static double FitScale(Size source, Size bounds) =>
+            Math.Min((double)bounds.Width / source.Width, (double)bounds.Height / source.Height);
     }
 }
