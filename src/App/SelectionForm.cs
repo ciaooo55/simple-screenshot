@@ -178,8 +178,8 @@ namespace SimpleScreenshot
             bool transformed = moving || handleX != 0 || handleY != 0;
             dragging = moving = false;
             Capture = false;
-            if (!transformed && !areaDragStarted && !HasSelection)
-                selection = pressedWindow?.Bounds ?? original;
+            if (!transformed && !HasSelection)
+                selection = Geometry.AreaSelectionFallback(original, pressedWindow?.Bounds, areaDragStarted);
             LayoutRibbon();
             Invalidate();
             if (!fineTune && HasSelection) Accept();

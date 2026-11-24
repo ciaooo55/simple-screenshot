@@ -40,6 +40,9 @@ namespace SimpleScreenshot.Core
                 Math.Max(origin.X, pointer.X) + 1, Math.Max(origin.Y, pointer.Y) + 1);
         }
 
+        public static Rectangle AreaSelectionFallback(Rectangle previous, Rectangle? window, bool dragStarted) =>
+            dragStarted ? previous : window ?? previous;
+
         public static int DragAxis(int fixedPoint, int pointer, int lower, int upper, int minSize)
         {
             if (pointer >= fixedPoint)

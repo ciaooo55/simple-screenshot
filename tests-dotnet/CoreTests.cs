@@ -127,6 +127,11 @@ namespace SimpleScreenshot.Tests
             Assert.Equal(Rectangle.Empty,
                 Geometry.SelectionFromDrag(origin, new Point(11, 21), bounds, false, dragSize, ref dragStarted));
             Assert.True(dragStarted);
+            var previous = new Rectangle(40, 50, 30, 20);
+            var window = new Rectangle(0, 0, 70, 70);
+            Assert.Equal(previous, Geometry.AreaSelectionFallback(previous, window, dragStarted));
+            Assert.Equal(Rectangle.Empty, Geometry.AreaSelectionFallback(Rectangle.Empty, window, dragStarted));
+            Assert.Equal(window, Geometry.AreaSelectionFallback(previous, window, false));
         }
 
         [Fact]
