@@ -184,7 +184,12 @@ namespace SimpleScreenshot
             if (e.Button == MouseButtons.Right) { StepBack(); return; }
             if (e.Button != MouseButtons.Left) return;
             PointF point = ImagePoint(e.Location);
-            if (ocr.Active) { ocr.Down(point); return; }
+            if (ocr.Active)
+            {
+                viewport.Capture = true;
+                ocr.Down(point);
+                return;
+            }
             if (!Destination.Contains(e.Location)) return;
             mouseOrigin = e.Location;
             origin = point;
@@ -239,7 +244,12 @@ namespace SimpleScreenshot
         void Up(object sender, MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) return;
-            if (ocr.Active) { ocr.Up(ImagePoint(e.Location)); return; }
+            if (ocr.Active)
+            {
+                ocr.Up(ImagePoint(e.Location));
+                viewport.Capture = false;
+                return;
+            }
             if (!viewport.Capture) return;
             viewport.Capture = false;
             dragged |= BeyondDrag(e.Location);
@@ -298,21 +308,22 @@ namespace SimpleScreenshot
         void ClearInk()
         {
             active = null;
+            viewport.Capture = false;
             history.Clear();
             UpdateUi();
         }
 
         void Undo()
         {
-            if (active != null) { active = null; viewport.Capture = false; }
+            if (viewport.Capture || active != null) { active = null; viewport.Capture = false; }
             else history.Undo();
             UpdateUi();
         }
 
         void StepBack()
         {
-            if (ocr.Active) ocr.End();
-            else if (active != null || history.CanUndo) Undo();
+            if (ocr.Active) { viewport.Capture = false; ocr.End(); }
+            else if (viewport.Capture || active != null || history.CanUndo) Undo();
             else Reselect(false);
         }
 
@@ -330,7 +341,11 @@ namespace SimpleScreenshot
                 if (complete(output, action)) Close();
         }
 
-        void StartOcr() => ocr.Start(() => runOcr(image));
+        void StartOcr()
+        {
+            if (viewport.Capture) Undo();
+            ocr.Start(() => runOcr(image));
+        }
 
         protected override bool ProcessCmdKey(ref Message m, Keys data)
         {

@@ -131,8 +131,11 @@ namespace SimpleScreenshot
         {
             if (ocr.Active)
             {
-                if (e.Button == MouseButtons.Right) EndOcr();
-                else if (e.Button == MouseButtons.Left) ocr.Down(Source(e.Location));
+                if (e.Button == MouseButtons.Left)
+                {
+                    Capture = true;
+                    ocr.Down(Source(e.Location));
+                }
                 return;
             }
             if (e.Button == MouseButtons.Right) return;
@@ -195,7 +198,12 @@ namespace SimpleScreenshot
         {
             if (ocr.Active)
             {
-                if (e.Button == MouseButtons.Left) ocr.Up(Source(e.Location));
+                if (e.Button == MouseButtons.Right) EndOcr();
+                else if (e.Button == MouseButtons.Left)
+                {
+                    ocr.Up(Source(e.Location));
+                    Capture = false;
+                }
                 return;
             }
             if (e.Button == MouseButtons.Right) { MenuAt(e.Location); return; }
@@ -266,6 +274,10 @@ namespace SimpleScreenshot
 
         void StartOcr()
         {
+            stroke = null;
+            moveButton = MouseButtons.None;
+            fileDragging = false;
+            Capture = false;
             Cursor = Cursors.IBeam;
             ocr.Start(() => runOcr(image));
         }
@@ -273,6 +285,7 @@ namespace SimpleScreenshot
         void EndOcr()
         {
             ocr.End();
+            Capture = false;
             Cursor = draw ? Cursors.Cross : Cursors.SizeAll;
             hud = null;
             Invalidate();

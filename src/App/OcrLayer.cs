@@ -100,7 +100,8 @@ namespace SimpleScreenshot
             if (index < 0) return;
             dragging = false;
             anchor = focus = index;
-            bool Latin(string value) => value.Length > 0 && value.All(c => c < 128 && char.IsLetterOrDigit(c));
+            bool Latin(string value) => value.Length > 0 && value.All(c => c < 128 &&
+                (char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '\''));
             if (Latin(spans[index].Item1))
             {
                 while (anchor > 0 && Latin(spans[anchor - 1].Item1)) anchor--;
