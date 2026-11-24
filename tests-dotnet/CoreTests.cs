@@ -34,6 +34,14 @@ namespace SimpleScreenshot.Tests
         }
 
         [Theory]
+        [InlineData("[]")]
+        [InlineData("{\"start_with_windows\":\"true\"}")]
+        [InlineData("{\"save_directory\":null}")]
+        [InlineData("{\"version\":12}")]
+        public void RejectsInvalidSettingsRatherThanCoercingThem(string json) =>
+            Assert.Throws<System.Runtime.Serialization.SerializationException>(() => Decode(json));
+
+        [Theory]
         [InlineData("print screen", "PrintScreen", 0, 44)]
         [InlineData("windows+shift+f24", "Shift+Win+F24", 12, 135)]
         [InlineData("control+alt+a", "Ctrl+Alt+A", 3, 65)]

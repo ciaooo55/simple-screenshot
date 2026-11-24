@@ -3,6 +3,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
+using System.Xml;
+using System.Xml.Linq;
 
 namespace SimpleScreenshot.Core
 {
@@ -88,9 +90,34 @@ namespace SimpleScreenshot.Core
 
         public static Settings Decode(Stream stream, Settings defaults)
         {
-            var stored = (Stored)new DataContractJsonSerializer(typeof(Stored)).ReadObject(stream);
-            if (stored == null)
+            XElement document;
+            using (var reader = JsonReaderWriterFactory.CreateJsonReader(stream, XmlDictionaryReaderQuotas.Max))
+                document = XElement.Load(reader);
+            if ((string)document.Attribute("type") != "object")
                 throw new SerializationException("设置文件根节点不是对象。");
+            foreach (var field in document.Elements())
+            {
+                var name = field.Name.LocalName;
+                var kind = (string)field.Attribute("type");
+                switch (name)
+                {
+                    case "version":
+                        if (kind != "number") throw new SerializationException("设置版本无效。");
+                        break;
+                    case "pin_hotkey":
+                        if (kind == "null") break;
+                        goto case "copy_hotkey";
+                    case "copy_hotkey": case "save_hotkey": case "save_directory":
+                        if (kind != "string") throw new SerializationException("快捷键或保存目录无效。");
+                        break;
+                    case "start_with_windows": case "hide_pins_on_capture":
+                        if (kind != "boolean") throw new SerializationException("开机启动或贴图设置无效。");
+                        break;
+                }
+            }
+            Stored stored;
+            using (var reader = document.CreateReader())
+                stored = (Stored)new DataContractJsonSerializer(typeof(Stored)).ReadObject(reader);
             int version = stored.Version ?? Settings.CurrentVersion;
             if (version < 1 || version > Settings.CurrentVersion)
                 throw new SerializationException("不支持的设置版本：" + version);
