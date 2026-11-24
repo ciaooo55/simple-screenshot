@@ -6,3 +6,6 @@ build/
 dist/
 tp/
 *.tmp
+[Bb]in/
+[Oo]bj/
+TestResults/
