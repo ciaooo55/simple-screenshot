@@ -20,7 +20,8 @@ namespace SimpleScreenshot
         readonly Timer idle;
         NamedPipeServerStream server;
         Process worker;
-        bool busy, disposed, safeMode;
+        bool busy, disposed;
+        bool safeMode = Environment.GetEnvironmentVariable("SIMPLESCREENSHOT_OCR_SAFE_MODE") == "1";
 
         internal OcrClient() => idle = new Timer(_ => ReleaseIdle(), null, Timeout.Infinite, Timeout.Infinite);
 
@@ -111,6 +112,8 @@ namespace SimpleScreenshot
                     lock (gate)
                     {
                         safeMode = true;
+                        if (worker != null && worker.HasExited)
+                            Log.Write($"文字识别进程退出：0x{worker.ExitCode:X8}", "native-crash.log");
                         StopWorker();
                     }
                     Log.Write(error, "native-crash.log");
