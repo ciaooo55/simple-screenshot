@@ -326,11 +326,20 @@ namespace SimpleScreenshot
         {
             var screen = Screen.FromPoint(new Point(snapshot.Bounds.X + cursor.X, snapshot.Bounds.Y + cursor.Y)).Bounds;
             screen.Offset(-snapshot.Bounds.X, -snapshot.Bounds.Y);
+            Color value = snapshot.Bitmap.GetPixel(cursor.X, cursor.Y);
+            string positionText = $"位置 {cursor.X + snapshot.Bounds.X}, {cursor.Y + snapshot.Bounds.Y}";
+            string colorText = notice ?? $"#{value.R:X2}{value.G:X2}{value.B:X2}  ·  RGB {value.R}, {value.G}, {value.B}";
+            var measureBounds = new Size(int.MaxValue, int.MaxValue);
+            const TextFormatFlags flags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            int textWidth = Math.Max(TextRenderer.MeasureText(g, positionText, Theme.UiFont, measureBounds, flags).Width,
+                TextRenderer.MeasureText(g, colorText, Theme.UiFont, measureBounds, flags).Width);
+            int width = Math.Max(166, textWidth + 16);
+            const int height = 117;
             int x = cursor.X + 23, y = cursor.Y + 23;
-            const int width = 166, height = 117;
             if (x + width > screen.Right) x = cursor.X - width - 20;
             if (y + height > screen.Bottom) y = cursor.Y - height - 20;
-            var panel = new Rectangle(Math.Max(screen.Left + 4, x), Math.Max(screen.Top + 4, y), width, height);
+            x = Geometry.Clamp(x, screen.Left + 4, screen.Right - width - 4);
+            var panel = new Rectangle(x, Math.Max(screen.Top + 4, y), width, height);
             Theme.Card(g, panel, Theme.Dark);
             var lens = new Rectangle(panel.X + 6, panel.Y + 6, width - 12, 61);
             var source = Rectangle.Intersect(ImageBounds, new Rectangle(cursor.X - 8, cursor.Y - 3, 17, 7));
@@ -346,11 +355,9 @@ namespace SimpleScreenshot
                 g.DrawLine(pen, cx, lens.Top, cx, lens.Bottom);
                 g.DrawLine(pen, lens.Left, cy, lens.Right, cy);
             }
-            Color value = snapshot.Bitmap.GetPixel(cursor.X, cursor.Y);
-            Theme.Text(g, $"位置 {cursor.X + snapshot.Bounds.X}, {cursor.Y + snapshot.Bounds.Y}",
-                Theme.UiFont, new Rectangle(panel.X + 8, panel.Y + 66, width - 15, 22), Color.White);
-            Theme.Text(g, notice ?? $"#{value.R:X2}{value.G:X2}{value.B:X2}  ·  RGB {value.R}, {value.G}, {value.B}",
-                Theme.UiFont, new Rectangle(panel.X + 8, panel.Y + 87, width - 15, 22), Color.FromArgb(172, 210, 255));
+            Theme.Text(g, positionText, Theme.UiFont, new Rectangle(panel.X + 8, panel.Y + 66, width - 16, 22), Color.White);
+            Theme.Text(g, colorText, Theme.UiFont, new Rectangle(panel.X + 8, panel.Y + 87, width - 16, 22),
+                Color.FromArgb(172, 210, 255));
         }
 
         void DrawHelp(Graphics g)
