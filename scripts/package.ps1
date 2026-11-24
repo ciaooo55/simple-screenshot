@@ -22,12 +22,22 @@ Get-ChildItem -LiteralPath $ocrOutput -Filter "*.dll" | Copy-Item -Destination $
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Redist.14.Latest -property installationPath
 if ($LASTEXITCODE -ne 0 -or -not $vs) { throw "请安装 Visual Studio C++ Redistributable 组件以打包便携版。" }
+$runtimeDlls = "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll"
 $crt = Get-ChildItem -LiteralPath (Join-Path $vs "VC/Redist/MSVC") -Directory |
+    Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' } |
     Sort-Object { [version]$_.Name } -Descending |
-    ForEach-Object { Join-Path $_.FullName "x64/Microsoft.VC143.CRT" } |
-    Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    ForEach-Object {
+        $x64 = Join-Path $_.FullName "x64"
+        if (Test-Path -LiteralPath $x64) {
+            Get-ChildItem -LiteralPath $x64 -Directory -Filter "Microsoft.VC*.CRT"
+        }
+    } |
+    Where-Object {
+        $candidate = $_.FullName
+        @($runtimeDlls | Where-Object { -not (Test-Path -LiteralPath (Join-Path $candidate $_)) }).Count -eq 0
+    } | Select-Object -First 1 -ExpandProperty FullName
 if (-not $crt) { throw "未找到 Visual C++ 运行时的 x64 应用本地文件。" }
-foreach ($dll in "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+foreach ($dll in $runtimeDlls) {
     Copy-Item -LiteralPath (Join-Path $crt $dll) -Destination $ocr
 }
 
