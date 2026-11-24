@@ -62,7 +62,7 @@ namespace SimpleScreenshot
             if (failed.Length > 0) warnings.Add("快捷键已被占用：" + string.Join("、", failed));
             try
             {
-                if (settings.StartWithWindows) Startup.Set(true);
+                Startup.Set(settings.StartWithWindows);
                 autostart.Checked = Startup.IsEnabled();
             }
             catch (Exception error) { Log.Write(error); warnings.Add("无法更新开机启动：" + error.Message); }
@@ -71,11 +71,11 @@ namespace SimpleScreenshot
             tray.Icon = icon ?? SystemIcons.Application;
             tray.ContextMenuStrip = menu;
             tray.Visible = true;
-            tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) { click.Stop(); click.Start(); } };
+            tray.MouseClick += (_, e) => { click.Stop(); if (e.Button == MouseButtons.Left) click.Start(); };
             tray.MouseDoubleClick += (_, e) => { if (e.Button == MouseButtons.Left) { click.Stop(); ShowSettings(); } };
             tray.BalloonTipClicked += (_, __) => OpenLastSaved();
             click.Tick += (_, __) => { click.Stop(); Capture(CaptureAction.Copy); };
-            menu.Opening += (_, __) => RefreshMenu();
+            menu.Opening += (_, __) => { click.Stop(); RefreshMenu(); };
             SyncTooltip();
             Post(() =>
             {
@@ -302,7 +302,12 @@ namespace SimpleScreenshot
             UpdateLast(output);
             if (action == CaptureAction.Save) return Save(output, false, false) == true;
             if (action == CaptureAction.SaveAs) return Save(output, true, true) != false;
-            try { Clipboard.SetImage(output); return true; }
+            try
+            {
+                Clipboard.SetImage(output);
+                Notice("截图已复制", "可直接粘贴；也可从托盘保存最近一张截图。");
+                return true;
+            }
             catch (Exception error) { Log.Write(error); Notice("复制失败", error.Message, true); return false; }
         }
 

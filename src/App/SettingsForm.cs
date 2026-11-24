@@ -150,11 +150,27 @@ namespace SimpleScreenshot
             var key = data & Keys.KeyCode;
             if (key == Keys.ControlKey || key == Keys.ShiftKey || key == Keys.Menu || key == Keys.LWin || key == Keys.RWin)
                 return true;
+            Record(data);
+            return true;
+        }
+
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.PrintScreen)
+            {
+                Record(e.KeyData);
+                e.Handled = true;
+            }
+            base.OnKeyUp(e);
+        }
+
+        void Record(Keys data)
+        {
             int mask = ((data & Keys.Alt) == 0 ? 0 : 1) | ((data & Keys.Control) == 0 ? 0 : 2) |
                 ((data & Keys.Shift) == 0 ? 0 : 4) | (Native.WinDown ? 8 : 0);
             try
             {
-                Text = new Hotkey(mask, (int)key).ToString();
+                Text = new Hotkey(mask, (int)(data & Keys.KeyCode)).ToString();
                 AccessibleDescription = "当前快捷键：" + Text;
                 dismiss = false;
             }
@@ -164,7 +180,6 @@ namespace SimpleScreenshot
                     MessageBox.Show(this, error.Message, "无效的快捷键", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 dismiss = true;
             }
-            return true;
         }
     }
 }
