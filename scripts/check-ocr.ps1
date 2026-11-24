@@ -5,7 +5,8 @@ Add-Type -AssemblyName System.Drawing
 
 $directory = [IO.Path]::GetFullPath($PackageDir)
 $exe = Join-Path $directory "SimpleScreenshot.exe"
-$type = [Reflection.Assembly]::LoadFrom($exe).GetType("SimpleScreenshot.OcrClient", $true)
+$app = [Reflection.Assembly]::LoadFrom($exe)
+$type = $app.GetType("SimpleScreenshot.OcrClient", $true)
 $recognize = $type.GetMethod("Recognize", [Reflection.BindingFlags]"Instance, NonPublic")
 $client = [Activator]::CreateInstance($type, $true)
 $fixture = $null
@@ -35,3 +36,32 @@ finally {
     if ($null -ne $fixture) { $fixture.Dispose() }
     ([IDisposable]$client).Dispose()
 }
+
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Reflection;
+using System.Threading.Tasks;
+
+public static class OcrLayerCheck
+{
+    public static void VerifyFailure(Assembly app)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        Type type = app.GetType("SimpleScreenshot.OcrLayer", true);
+        bool reported = false;
+        object layer = Activator.CreateInstance(type, flags, null, new object[] {
+            (Action)(() => {}), (Action<string>)(_ => {}),
+            (Action<string>)(message => reported = message == "Test OCR failure")
+        }, null);
+        Func<Task<Tuple<string, RectangleF>[]>> recognize = () =>
+            Task.FromException<Tuple<string, RectangleF>[]>(new InvalidOperationException("Test OCR failure"));
+        type.GetMethod("Start", flags).Invoke(layer, new object[] { recognize });
+        if (!reported || (bool)type.GetProperty("Active", flags).GetValue(layer) ||
+            (bool)type.GetProperty("Loading", flags).GetValue(layer))
+            throw new InvalidOperationException("An OCR failure did not restore the normal interaction state.");
+    }
+}
+'@
+[OcrLayerCheck]::VerifyFailure($app)
+Write-Host "Packaged OCR failure restores the normal interaction state."

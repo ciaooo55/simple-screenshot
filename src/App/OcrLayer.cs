@@ -11,16 +11,18 @@ namespace SimpleScreenshot
     {
         readonly Action redraw;
         readonly Action<string> status;
+        readonly Action<string> reportFailure;
         Tuple<string, RectangleF>[] spans;
         int anchor = -1, focus = -1, generation;
         bool dragging;
         internal bool Active { get; private set; }
         internal bool Loading { get; private set; }
 
-        internal OcrLayer(Action redraw, Action<string> status)
+        internal OcrLayer(Action redraw, Action<string> status, Action<string> reportFailure)
         {
             this.redraw = redraw;
             this.status = status;
+            this.reportFailure = reportFailure;
         }
 
         internal async void Start(Func<Task<Tuple<string, RectangleF>[]>> run)
@@ -42,7 +44,8 @@ namespace SimpleScreenshot
             {
                 if (token != generation) return;
                 Log.Write(error);
-                status(error.Message);
+                End();
+                reportFailure(error.Message);
             }
             finally
             {

@@ -45,7 +45,11 @@ namespace SimpleScreenshot
             Location = location;
             minZoom = Math.Min(1, Math.Max(.2f, 48f / Math.Min(image.Width, image.Height)));
             SetZoom(1, Point.Empty, false);
-            ocr = new OcrLayer(Invalidate, value => ShowHud(value, false));
+            ocr = new OcrLayer(Invalidate, value => ShowHud(value, false), message =>
+            {
+                RestoreOcrInteraction();
+                ShowHud(message);
+            });
             hudTimer.Tick += (_, __) => { hudTimer.Stop(); hud = null; Invalidate(); };
             if (fit)
             {
@@ -295,10 +299,15 @@ namespace SimpleScreenshot
         void EndOcr()
         {
             ocr.End();
-            Capture = false;
-            Cursor = draw ? Cursors.Cross : Cursors.SizeAll;
+            RestoreOcrInteraction();
             hud = null;
             Invalidate();
+        }
+
+        void RestoreOcrInteraction()
+        {
+            Capture = false;
+            Cursor = draw ? Cursors.Cross : Cursors.SizeAll;
         }
 
         void MenuAt(Point point)

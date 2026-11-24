@@ -116,7 +116,11 @@ namespace SimpleScreenshot
             Controls.Add(body);
             Controls.Add(status);
             Controls.Add(header);
-            ocr = new OcrLayer(UpdateUi, value => { detail = value; UpdateUi(); });
+            ocr = new OcrLayer(UpdateUi, value => { detail = value; UpdateUi(); }, message =>
+            {
+                viewport.Capture = false;
+                status.Text = message;
+            });
 
             var screen = Screen.FromPoint(location).WorkingArea;
             int desiredWidth = Math.Max(Math.Min(screen.Width - 16, 700), Math.Min(image.Width + 12, screen.Width - 20));
