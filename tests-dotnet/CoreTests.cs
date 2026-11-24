@@ -94,6 +94,20 @@ namespace SimpleScreenshot.Tests
             Assert.Equal(1.1, Geometry.FitScale(new Size(4000, 2000), new Size(5000, 2200)));
 
         [Fact]
+        public void DragIncludesLastDesktopPixelInBothDirectionsAndPreservesWindowClick()
+        {
+            var bounds = new Size(100, 80);
+            var start = new Point(10, 20);
+            var edge = new Point(99, 79);
+            var expected = new Rectangle(10, 20, 90, 60);
+            Assert.Equal(expected, Geometry.SelectionFromDrag(start, edge, bounds, false));
+            Assert.Equal(expected, Geometry.SelectionFromDrag(edge, start, bounds, false));
+            Assert.Equal(new Rectangle(40, 20, 60, 60),
+                Geometry.SelectionFromDrag(new Point(40, 20), edge, bounds, true));
+            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(edge, edge, bounds, false));
+        }
+
+        [Fact]
         public void DrawingAfterUndoClearsRedo()
         {
             var history = new History<int>();

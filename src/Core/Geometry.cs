@@ -20,6 +20,22 @@ namespace SimpleScreenshot.Core
             return visible;
         }
 
+        public static Rectangle SelectionFromDrag(Point origin, Point pointer, Size bounds, bool square)
+        {
+            if (origin == pointer) return Rectangle.Empty;
+            if (square)
+            {
+                bool left = pointer.X < origin.X, up = pointer.Y < origin.Y;
+                int side = 1 + Math.Max(Math.Abs(pointer.X - origin.X), Math.Abs(pointer.Y - origin.Y));
+                side = Math.Min(side, Math.Min(left ? origin.X + 1 : bounds.Width - origin.X,
+                    up ? origin.Y + 1 : bounds.Height - origin.Y));
+                pointer = new Point(origin.X + (left ? 1 - side : side - 1),
+                    origin.Y + (up ? 1 - side : side - 1));
+            }
+            return Rectangle.FromLTRB(Math.Min(origin.X, pointer.X), Math.Min(origin.Y, pointer.Y),
+                Math.Max(origin.X, pointer.X) + 1, Math.Max(origin.Y, pointer.Y) + 1);
+        }
+
         public static int DragAxis(int fixedPoint, int pointer, int lower, int upper, int minSize)
         {
             if (pointer >= fixedPoint)

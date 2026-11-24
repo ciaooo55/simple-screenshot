@@ -165,18 +165,7 @@ namespace SimpleScreenshot
                 selection = Rectangle.FromLTRB(left, top, right, bottom);
             }
             else
-            {
-                if (ShiftDown)
-                {
-                    int side = Math.Max(Math.Abs(dx), Math.Abs(dy));
-                    side = Math.Min(side, Math.Min(dx < 0 ? origin.X : ImageBounds.Right - origin.X,
-                        dy < 0 ? origin.Y : ImageBounds.Bottom - origin.Y));
-                    dx = dx < 0 ? -side : side;
-                    dy = dy < 0 ? -side : side;
-                }
-                selection = Rectangle.FromLTRB(Math.Min(origin.X, origin.X + dx), Math.Min(origin.Y, origin.Y + dy),
-                    Math.Max(origin.X, origin.X + dx), Math.Max(origin.Y, origin.Y + dy));
-            }
+                selection = Geometry.SelectionFromDrag(origin, cursor, ImageBounds.Size, ShiftDown);
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
