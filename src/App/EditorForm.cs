@@ -32,7 +32,7 @@ namespace SimpleScreenshot
         float scale = 1, initialScale = 1;
         Color ink = Color.FromArgb(229, 57, 68);
         float width = 4, textSize = 24;
-        bool dragged, doubleClick;
+        bool drawingGesture, dragged, doubleClick;
         string detail;
         static Color rememberedColor = Color.FromArgb(229, 57, 68);
         static float rememberedWidth = 4, rememberedTextSize = 24;
@@ -61,6 +61,10 @@ namespace SimpleScreenshot
             viewport.MouseDown += Down;
             viewport.MouseMove += MovePointer;
             viewport.MouseUp += Up;
+            viewport.MouseCaptureChanged += (_, __) =>
+            {
+                if (!viewport.Capture && drawingGesture) { CancelGesture(); UpdateUi(); }
+            };
             viewport.MouseDoubleClick += Double;
             viewport.MouseWheel += Zoom;
             viewport.SizeChanged += (_, __) => viewport.Invalidate();
@@ -191,6 +195,7 @@ namespace SimpleScreenshot
                 return;
             }
             if (!Destination.Contains(e.Location)) return;
+            drawingGesture = true;
             mouseOrigin = e.Location;
             origin = point;
             dragged = doubleClick = false;
@@ -212,7 +217,7 @@ namespace SimpleScreenshot
         void MovePointer(object sender, MouseEventArgs e)
         {
             if (ocr.Active) { ocr.Move(ImagePoint(e.Location)); return; }
-            if (!viewport.Capture || e.Button != MouseButtons.Left) return;
+            if (!drawingGesture || e.Button != MouseButtons.Left) return;
             dragged |= BeyondDrag(e.Location);
             if (dragged && active != null)
             {
@@ -250,7 +255,8 @@ namespace SimpleScreenshot
                 viewport.Capture = false;
                 return;
             }
-            if (!viewport.Capture) return;
+            if (!drawingGesture) return;
+            drawingGesture = false;
             viewport.Capture = false;
             dragged |= BeyondDrag(e.Location);
             if (doubleClick && !dragged && tool != InkTool.Text && tool != InkTool.Number)
@@ -307,15 +313,14 @@ namespace SimpleScreenshot
 
         void ClearInk()
         {
-            active = null;
-            viewport.Capture = false;
+            CancelGesture();
             history.Clear();
             UpdateUi();
         }
 
         void Undo()
         {
-            if (viewport.Capture || active != null) { active = null; viewport.Capture = false; }
+            if (drawingGesture) CancelGesture();
             else history.Undo();
             UpdateUi();
         }
@@ -323,8 +328,15 @@ namespace SimpleScreenshot
         void StepBack()
         {
             if (ocr.Active) { viewport.Capture = false; ocr.End(); }
-            else if (viewport.Capture || active != null || history.CanUndo) Undo();
+            else if (drawingGesture || history.CanUndo) Undo();
             else Reselect(false);
+        }
+
+        void CancelGesture()
+        {
+            drawingGesture = false;
+            active = null;
+            viewport.Capture = false;
         }
 
         void Reselect(bool precise)
@@ -343,13 +355,13 @@ namespace SimpleScreenshot
 
         void StartOcr()
         {
-            if (viewport.Capture) Undo();
+            if (drawingGesture) CancelGesture();
             ocr.Start(() => runOcr(image));
         }
 
         protected override bool ProcessCmdKey(ref Message m, Keys data)
         {
-            if (ocr.Active) return ocr.Key(data);
+            if (ocr.Active && data != Keys.Escape) return ocr.Key(data);
             switch (data)
             {
                 case Keys.W: StartOcr(); return true;
