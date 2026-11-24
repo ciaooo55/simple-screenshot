@@ -165,7 +165,7 @@ namespace SimpleScreenshot
                 selection = Rectangle.FromLTRB(left, top, right, bottom);
             }
             else
-                selection = Geometry.SelectionFromDrag(origin, cursor, ImageBounds.Size, ShiftDown);
+                selection = Geometry.SelectionFromDrag(origin, cursor, ImageBounds.Size, ShiftDown, SystemInformation.DragSize);
         }
 
         protected override void OnMouseUp(MouseEventArgs e)

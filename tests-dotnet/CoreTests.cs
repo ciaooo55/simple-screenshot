@@ -97,14 +97,18 @@ namespace SimpleScreenshot.Tests
         public void DragIncludesLastDesktopPixelInBothDirectionsAndPreservesWindowClick()
         {
             var bounds = new Size(100, 80);
+            var dragSize = new Size(4, 4);
             var start = new Point(10, 20);
             var edge = new Point(99, 79);
             var expected = new Rectangle(10, 20, 90, 60);
-            Assert.Equal(expected, Geometry.SelectionFromDrag(start, edge, bounds, false));
-            Assert.Equal(expected, Geometry.SelectionFromDrag(edge, start, bounds, false));
+            Assert.Equal(expected, Geometry.SelectionFromDrag(start, edge, bounds, false, dragSize));
+            Assert.Equal(expected, Geometry.SelectionFromDrag(edge, start, bounds, false, dragSize));
             Assert.Equal(new Rectangle(40, 20, 60, 60),
-                Geometry.SelectionFromDrag(new Point(40, 20), edge, bounds, true));
-            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(edge, edge, bounds, false));
+                Geometry.SelectionFromDrag(new Point(40, 20), edge, bounds, true, dragSize));
+            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(edge, edge, bounds, false, dragSize));
+            Assert.Equal(Rectangle.Empty, Geometry.SelectionFromDrag(start, new Point(11, 21), bounds, false, dragSize));
+            Assert.Equal(new Rectangle(10, 20, 3, 2),
+                Geometry.SelectionFromDrag(start, new Point(12, 21), bounds, false, dragSize));
         }
 
         [Fact]
