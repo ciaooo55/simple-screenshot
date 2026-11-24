@@ -19,6 +19,8 @@ namespace SimpleScreenshot
     {
         const int MaxPayload = 384 * 1024 * 1024;
         const int MaxSpans = 500000;
+        static readonly string Executable = typeof(OcrClient).Assembly.Location;
+        static readonly string OcrDirectory = Path.Combine(Path.GetDirectoryName(Executable), "ocr");
         readonly object gate = new object();
         readonly Timer idle;
         NamedPipeServerStream server;
@@ -65,8 +67,7 @@ namespace SimpleScreenshot
                     if (worker == null || worker.HasExited)
                     {
                         StopWorker();
-                        var directory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ocr");
-                        if (!File.Exists(Path.Combine(directory, "SimpleScreenshot.Ocr.dll")))
+                        if (!File.Exists(Path.Combine(OcrDirectory, "SimpleScreenshot.Ocr.dll")))
                             throw new InvalidOperationException("未找到文字识别组件，请完整解压包含 ocr 文件夹的压缩包。");
                         string name = "SimpleScreenshot-OCR-" + Guid.NewGuid().ToString("N");
                         var security = new PipeSecurity();
@@ -80,9 +81,9 @@ namespace SimpleScreenshot
                         {
                             worker = Process.Start(new ProcessStartInfo
                             {
-                                FileName = System.Windows.Forms.Application.ExecutablePath,
+                                FileName = Executable,
                                 Arguments = "--ocr-worker " + name + (safeMode ? " --safe-mode" : ""),
-                                UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory
+                                UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = OcrDirectory
                             });
                             expectedClientPid = worker.Id;
                         }
@@ -90,17 +91,17 @@ namespace SimpleScreenshot
                     }
                     connection = server;
                 }
+                bool authenticated = !expectedClientPid.HasValue;
                 try
                 {
                     if (expectedClientPid.HasValue)
                     {
-                        var wait = connection.BeginWaitForConnection(null, null);
-                        using (var signal = wait.AsyncWaitHandle)
-                            if (!signal.WaitOne(TimeSpan.FromSeconds(15))) throw new TimeoutException("文字识别进程启动超时。");
-                        connection.EndWaitForConnection(wait);
+                        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+                            connection.WaitForConnectionAsync(timeout.Token).GetAwaiter().GetResult();
                         if (!GetNamedPipeClientProcessId(connection.SafePipeHandle, out uint actualClientPid) ||
                             actualClientPid != (uint)expectedClientPid.Value)
                             throw new IOException("无法验证文字识别进程的连接。");
+                        authenticated = true;
                     }
                     using (var output = new BinaryWriter(connection, System.Text.Encoding.UTF8, true))
                     using (var input = new BinaryReader(connection, System.Text.Encoding.UTF8, true))
@@ -123,13 +124,20 @@ namespace SimpleScreenshot
                 {
                     lock (gate)
                     {
-                        safeMode = true;
+                        if (authenticated) safeMode = true;
                         if (worker != null && worker.HasExited)
                             Log.Write($"文字识别进程退出：0x{worker.ExitCode:X8}", "native-crash.log");
                         StopWorker();
                     }
-                    Log.Write(error, "native-crash.log");
-                    throw new InvalidOperationException("识别进程异常退出，已启用系统 OCR 兼容模式，请重试。", error);
+                    if (authenticated)
+                    {
+                        Log.Write(error, "native-crash.log");
+                        throw new InvalidOperationException("识别进程异常退出，已启用系统 OCR 兼容模式，请重试。", error);
+                    }
+                    Log.Write(error);
+                    throw new InvalidOperationException(error is OperationCanceledException
+                        ? "文字识别进程连接超时，请重试。"
+                        : "无法连接文字识别进程，请重试。", error);
                 }
             }
         }
@@ -141,11 +149,10 @@ namespace SimpleScreenshot
 
         static Tuple<string, RectangleF>[] Invoke(Bitmap image, bool safe)
         {
-            var directory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ocr");
-            SetDllDirectory(directory);
-            var assembly = Assembly.LoadFrom(Path.Combine(directory, "SimpleScreenshot.Ocr.dll"));
+            SetDllDirectory(OcrDirectory);
+            var assembly = Assembly.LoadFrom(Path.Combine(OcrDirectory, "SimpleScreenshot.Ocr.dll"));
             var method = assembly.GetType("SimpleScreenshot.Ocr.Engine", true).GetMethod("Recognize");
-            return (Tuple<string, RectangleF>[])method.Invoke(null, new object[] { image, directory, safe });
+            return (Tuple<string, RectangleF>[])method.Invoke(null, new object[] { image, OcrDirectory, safe });
         }
 
         [DllImport("kernel32", CharSet = CharSet.Unicode)]

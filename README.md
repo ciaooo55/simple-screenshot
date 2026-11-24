@@ -53,7 +53,7 @@ dotnet test tests-dotnet/SimpleScreenshot.Tests.csproj -c Release
 
 ```powershell
 ./scripts/package.ps1
-./scripts/check-ocr.ps1 -PackageDir dist/staging
+powershell.exe -NoProfile -File ./scripts/check-ocr.ps1 -PackageDir dist/staging
 ```
 
 打包需 Visual Studio 的 x64 C++ Redistributable 组件，脚本将使用应用本地 DLL，不另运行安装程序。脚本从 PyPI 下载并校验固定版本 `rapidocr_onnxruntime==1.4.4` wheel，只解出同款 PaddleOCR 检测、方向和识别模型。字典位于识别模型的 `character` 元数据，与旧版 RapidOCR 用法一致；模型和运行时 DLL 不提交到仓库。GitHub Actions 只上传 ZIP，不创建 Release 或版本标签。

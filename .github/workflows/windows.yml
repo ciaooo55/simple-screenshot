@@ -26,7 +26,8 @@ jobs:
         run: dotnet test tests-dotnet/SimpleScreenshot.Tests.csproj -c Release
       - name: Assemble portable ZIP
         run: ./scripts/package.ps1
-      - name: Check packaged OCR worker
+      - name: Check packaged OCR client and worker
+        shell: powershell
         timeout-minutes: 3
         run: ./scripts/check-ocr.ps1 -PackageDir dist/staging
       - name: Upload ZIP
